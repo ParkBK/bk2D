@@ -37,7 +37,7 @@ class CharacterSpec:
 
     @staticmethod
     def load(path: Path) -> "CharacterSpec":
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))  # 메모장 BOM 허용
         base = path.parent
         clips = [ClipSpec(name=c["name"], src=(base / c["src"]).resolve(),
                           loop=c.get("loop", False), fps=c.get("fps")) for c in raw["clips"]]
