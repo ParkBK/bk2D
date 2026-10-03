@@ -1,0 +1,19 @@
+{
+  "name": "hero",
+  "default": "idle",
+  "fps": 12,
+  "height": 384,
+  "pixels_per_unit": 100,
+  "key": {
+    "mode": "chroma",
+    "color": "auto",
+    "tolerance": [20, 45],
+    "temporal_smooth": 0.0
+  },
+  "clips": [
+    { "name": "idle",   "src": "hero_idle.mp4",   "loop": true },
+    { "name": "walk",   "src": "hero_walk.mp4",   "loop": true },
+    { "name": "attack", "src": "hero_attack.mp4" },
+    { "name": "hit",    "src": "hero_hit.mp4" }
+  ]
+}
