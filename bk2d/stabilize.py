@@ -66,12 +66,35 @@ def stabilize(frames: list[np.ndarray], region: str = "feet",
     roi = (max(0, x0 - m), max(0, ry0 - m), min(w, x1 + m), min(h, y1 + m))
     limit = max(4, int(bh * max_ratio))
 
+    # 캐릭터가 화면 끝에서 잘려 있으면 그 축으로는 옮기지 않는다.
+    # 옮기면 잘린 선(예: 발목에서 끊긴 다리 끝)이 프레임마다 위아래로 움직여 "튕김"으로 보인다.
+    lock_y = y0 <= 1 or y1 >= h - 1
+    lock_x = x0 <= 1 or x1 >= w - 1
+
     ref = _signal(frames[0], roi)
     out, shifts = [frames[0]], [(0, 0)]
     for f in frames[1:]:
         dx, dy, peak = _phase_shift(ref, _signal(f, roi))
         if abs(dx) > limit or abs(dy) > limit or peak < 0.05:
             dx, dy = 0, 0  # 신뢰할 수 없는 측정은 건드리지 않음
+        if lock_x:
+            dx = 0
+        if lock_y:
+            dy = 0
         shifts.append((dx, dy))
         out.append(_shift(f, -dx, -dy))
     return out, shifts
+
+
+def locked_axes(frame) -> list[str]:
+    box = alpha_bbox(frame)
+    if box is None:
+        return []
+    h, w = frame.shape[:2]
+    x0, y0, x1, y1 = box
+    axes = []
+    if y0 <= 1 or y1 >= h - 1:
+        axes.append("세로")
+    if x0 <= 1 or x1 >= w - 1:
+        axes.append("가로")
+    return axes

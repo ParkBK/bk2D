@@ -69,3 +69,85 @@ def format_rows(rows: list[dict], title: str = "") -> str:
                f"{total['astc6'] / MB:>8.2f}M{total['astc8'] / MB:>8.2f}M")
     out.append("  PNG=디스크 용량, RGBA/ASTC=GPU 메모리 추정(밉맵 없음). 빌드 용량은 PNG 가 아니라 이 값으로 판단.")
     return "\n".join(out)
+
+
+def _world_frames(d: Path, meta: dict):
+    """각 프레임을 Unity 와 같은 방식(피벗 = 원점)으로 놓았을 때의 불투명 픽셀 좌표."""
+    import numpy as np
+    pages = {}
+    for f in meta["frames"]:
+        page = f.get("page", 0)
+        if page not in pages:
+            images = meta.get("images") or [meta["image"]]
+            pages[page] = np.asarray(Image.open(d / images[page]).convert("RGBA"))
+        pg = pages[page]
+        H = pg.shape[0]
+        piece = pg[H - f["y"] - f["h"]:H - f["y"], f["x"]:f["x"] + f["w"], 3]
+        pv = f.get("pivot") or meta["pivot"]
+        ys, xs = np.nonzero(piece > 128)
+        if len(xs) == 0:
+            yield None
+            continue
+        left, bottom = -pv["x"] * f["w"], -pv["y"] * f["h"]
+        wx = left + xs
+        wy = bottom + (f["h"] - 1 - ys)
+        yield {"ground": float(wy.min()), "top": float(wy.max()),
+               "cx": float(wx.mean()), "cy": float(wy.mean()),
+               "low_cx": float(wx[wy <= np.percentile(wy, 15)].mean()),
+               "pivot_out": not (0 <= pv["x"] <= 1 and 0 <= pv["y"] <= 1)}
+
+
+def check(folder: Path) -> str:
+    """출력 데이터만으로 '튕김' 을 측정한다. Unity 배치와 같은 계산(피벗 기준)."""
+    import numpy as np
+    out = []
+    for man in sorted(folder.rglob("*.character.json")):
+        d = man.parent
+        ch = json.loads(man.read_text(encoding="utf-8"))
+        for c in ch["clips"]:
+            meta = json.loads((d / c["json"]).read_text(encoding="utf-8"))
+            fr = list(_world_frames(d, meta))
+            order = meta.get("sequence") or list(range(len(fr)))
+            seq = [fr[i] for i in order if fr[i] is not None]
+            if len(seq) < 2:
+                continue
+            g = np.array([s["ground"] for s in seq])
+            t = np.array([s["top"] for s in seq])
+            lx = np.array([s["low_cx"] for s in seq])
+            cy = np.array([s["cy"] for s in seq])
+            loop = meta.get("loop", False)
+            steps = np.abs(np.diff(np.r_[cy, cy[:1]] if loop else cy))
+            body = steps[:-1] if loop else steps
+            med = float(np.median(body)) if len(body) else 0.0
+            seam = float(steps[-1]) if loop else 0.0
+            # 무게중심 세로 이동 방향이 바뀌는 횟수 (자연 호흡 1주기 = 2회)
+            dirs = np.sign(np.diff(cy))
+            dirs = dirs[dirs != 0]
+            flips = int(np.sum(dirs[1:] != dirs[:-1])) if len(dirs) > 1 else 0
+            applied = meta.get("applied", {})
+            shifts = applied.get("stabShifts") or []
+            max_shift = max((max(abs(a), abs(b)) for a, b in shifts), default=0)
+            pv_out = sum(s["pivot_out"] for s in seq)
+            out.append(f"[{ch['name']}] {c['name']}  ({len(fr)}프레임, 재생 {len(seq)}, {meta.get('playback', '')})")
+            out.append(f"  바닥선 출렁임   {np.ptp(g):6.1f}px   (잘린 다리/발끝 선. 1px 넘으면 위아래로 튐)")
+            out.append(f"  머리끝 출렁임   {np.ptp(t):6.1f}px")
+            out.append(f"  하체 좌우 흔들림 {np.ptp(lx):6.1f}px")
+            if loop:
+                ratio = seam / med if med > 0 else 0
+                out.append(f"  루프 이음매 이동 {seam:6.2f}px  (평소 프레임 간 {med:.2f}px, {ratio:.1f}배)")
+            out.append(f"  움직임 방향 전환 {flips}회")
+            out.append(f"  흔들림 보정 최대 {max_shift}px, 잠근 축 {applied.get('stabLocked') or '-'}"
+                       f"{', 피벗 범위 밖 프레임 ' + str(pv_out) if pv_out else ''}")
+            verdict = []
+            if np.ptp(g) > 1.5:
+                verdict.append("바닥선이 위아래로 움직임 → 잘린 다리 끝이 튐")
+            if loop and med > 0 and seam > 3 * med and seam > 1.0:
+                verdict.append("루프 이음매에서 점프")
+            if flips > max(4, len(seq) // 3):
+                verdict.append("방향이 너무 자주 바뀜 → 떨림/핑퐁 느낌")
+            if pv_out:
+                verdict.append("피벗이 스프라이트 밖 → Unity 처리에 따라 위치가 어긋날 수 있음")
+            out.append("  판정: " + ("; ".join(verdict) if verdict else
+                                     "데이터상 튕김 없음 → Unity 쪽(임포트/표시 설정) 확인 필요"))
+            out.append("")
+    return "\n".join(out) if out else "(출력 없음)"

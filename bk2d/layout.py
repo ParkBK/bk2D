@@ -101,19 +101,26 @@ def pack_grid(cells: list[Image.Image], spacing: int, max_size: int):
     return atlas, rects
 
 
-def trim(img: Image.Image, bleed: int = 1) -> tuple[Image.Image, tuple[int, int]]:
+def trim(img: Image.Image, bleed: int = 1,
+         keep: tuple[int, int] | None = None) -> tuple[Image.Image, tuple[int, int]]:
     """투명 여백을 잘라낸 이미지와, 원래 셀 안에서의 좌상단 위치.
 
     bleed: 바이리니어 필터링 시 가장자리 번짐을 위해 남기는 투명 여백(px).
+    keep: 반드시 포함할 점(피벗). 피벗이 스프라이트 밖(0~1 범위 밖)으로 나가지 않게 한다.
     """
     a = np.asarray(img)[..., 3]
     ys, xs = np.nonzero(a > 0)
     if len(xs) == 0:
-        return Image.new("RGBA", (4, 4), (0, 0, 0, 0)), (0, 0)
-    x0 = max(0, int(xs.min()) - bleed)
-    y0 = max(0, int(ys.min()) - bleed)
-    x1 = min(img.width, int(xs.max()) + 1 + bleed)
-    y1 = min(img.height, int(ys.max()) + 1 + bleed)
+        x0, y0, x1, y1 = (keep[0], keep[1], keep[0] + 1, keep[1] + 1) if keep else (0, 0, 4, 4)
+    else:
+        x0 = max(0, int(xs.min()) - bleed)
+        y0 = max(0, int(ys.min()) - bleed)
+        x1 = min(img.width, int(xs.max()) + 1 + bleed)
+        y1 = min(img.height, int(ys.max()) + 1 + bleed)
+    if keep:
+        kx, ky = keep
+        x0, y0 = min(x0, kx), min(y0, ky)
+        x1, y1 = max(x1, min(img.width, kx + 1)), max(y1, min(img.height, ky + 1))
     return img.crop((x0, y0, x1, y1)), (x0, y0)
 
 

@@ -236,10 +236,15 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log,
 
     mode = spec.stabilize or ("feet" if spec.loop else "none")
     if mode != "none":
+        locked = stabilize.locked_axes(frames[0])
         frames, shifts = stabilize.stabilize(frames, mode)
         drift = max(max(abs(dx), abs(dy)) for dx, dy in shifts)
+        diag.update(stabilize=mode, stabShifts=[list(v) for v in shifts], stabLocked=locked)
         if drift > 0:
             notes.append(f"흔들림 보정({mode}): 최대 {drift}px 이동 되돌림 (원본 해상도 기준)")
+        if locked:
+            notes.append(f"흔들림 보정: 캐릭터가 화면 끝에서 잘려 있어 {'/'.join(locked)} 방향 보정은 끔 "
+                         "(잘린 선이 움직여 튕겨 보이는 것 방지)")
 
     if n_extra:
         # 시작 프레임들을 "끝 다음 프레임" 쪽에서 원래 프레임 쪽으로 서서히 섞는다.
@@ -323,7 +328,7 @@ def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print,
             qa["loopSeam"] = round(timing.frame_diff(last, first), 4)
 
         # 프레임별 트리밍 -> 페이지 분할 패킹. 각 프레임 피벗은 공통 셀 피벗(발밑)을 그대로 가리킨다.
-        pieces = [layout.trim(c) if trim else (c, (0, 0)) for c in cells]
+        pieces = [layout.trim(c, keep=(cell.pivot_x, cell.pivot_y)) if trim else (c, (0, 0)) for c in cells]
         pages, rects = layout.pack_pages([p for p, _ in pieces], ch.spacing, ch.max_texture)
         images = [f"{stem}.png"] if len(pages) == 1 else [f"{stem}_p{i}.png" for i in range(len(pages))]
         for img, fn in zip(pages, images):

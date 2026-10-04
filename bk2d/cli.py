@@ -191,10 +191,19 @@ def main(argv=None):
     w.add_argument("--no-preview", action="store_true")
     w.add_argument("--name", default="hero", help="설정 파일이 없을 때 만들 캐릭터 이름")
 
+    ck = sub.add_parser("check", help="출력 결과에서 튕김(바닥선/이음매/떨림)을 Unity 배치 기준으로 측정")
+    ck.add_argument("folders", type=Path, nargs="+")
+
     st = sub.add_parser("stats", help="출력 폴더(들)의 프레임 수/아틀라스/용량/메모리 비교")
     st.add_argument("folders", type=Path, nargs="+")
 
     args = ap.parse_args(argv)
+
+    if args.cmd == "check":
+        for f in args.folders:
+            print(f"== {f}")
+            print(report.check(f))
+        return 0
 
     if args.cmd == "stats":
         for f in args.folders:

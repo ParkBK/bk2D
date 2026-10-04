@@ -416,3 +416,29 @@ def test_profile_timing_mismatch_warns(idle_long, capsys):
     (idle_long / "tm.json").write_text(json.dumps(cfg))
     assert main(["build", str(idle_long / "tm.json"), "-o", str(idle_long / "tm"), "--no-preview", "--no-sync"]) == 0
     assert "동작 타이밍이 프로필마다 다릅니다" in capsys.readouterr().out
+
+
+def test_stabilize_locks_axis_when_character_is_cut_at_edge():
+    """발이 화면 아래에서 잘린 캐릭터는 세로 보정을 하면 잘린 선이 위아래로 튄다 -> 세로 보정 금지."""
+    from bk2d import stabilize
+    rng = np.random.default_rng(3)
+    frames = []
+    for i in range(10):
+        a = np.zeros((300, 200, 4), dtype=np.uint8)
+        dx, dy = rng.integers(-4, 5, size=2)
+        a[40 + dy:300, 60 + dx:140 + dx] = (200, 120, 60, 255)    # 아래로 잘린 몸통
+        a[60 + dy:80 + dy, 70 + dx:90 + dx] = (30, 30, 30, 255)     # 무늬(측정용)
+        frames.append(a)
+    out, shifts = stabilize.stabilize(frames, "feet")
+    assert all(dy == 0 for _, dy in shifts)                        # 세로는 잠김
+    bottoms = [np.nonzero(f[..., 3])[0].max() for f in out]
+    assert len(set(bottoms)) == 1                                 # 잘린 선 고정
+    assert stabilize.locked_axes(frames[0]) == ["세로"]
+
+
+def test_check_command_reports_bounce_metrics(idle_long, capsys):
+    from bk2d.cli import main
+    _build_cfg(idle_long, "ck", fps=8, loop_seconds=[1.5, 2.5], loop_crossfade=2)
+    assert main(["check", str(idle_long / "ck")]) == 0
+    out = capsys.readouterr().out
+    assert "바닥선 출렁임" in out and "루프 이음매 이동" in out and "판정:" in out
