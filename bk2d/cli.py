@@ -3,6 +3,7 @@
     python -m bk2d init  work                      # 폴더의 mp4 로 설정 파일 생성
     python -m bk2d build work\\hero.json -o out\\hero
     python -m bk2d watch work -o C:\\MyGame\\Assets\\Characters\\hero   # 영상 넣으면 자동 빌드
+    python -m bk2d gui                             # 프로그램 창으로 실행
 """
 import argparse
 import json
@@ -56,6 +57,7 @@ def _init(folder: Path, name: str):
         "erase": [[0.62, 0.90, 1.0, 1.0]],
         "despeckle": 64,
         "loop_seconds": [1.0, 2.5],
+        "loop_crossfade": 2,  # 루프 끝 -> 처음 전환이 튀지 않게 시작 프레임을 섞는다
         "max_frames": 16,
         "pingpong": False,
         "max_texture": 2048,
@@ -194,10 +196,16 @@ def main(argv=None):
     ck = sub.add_parser("check", help="출력 결과에서 튕김(바닥선/이음매/떨림)을 Unity 배치 기준으로 측정")
     ck.add_argument("folders", type=Path, nargs="+")
 
+    sub.add_parser("gui", help="프로그램 창으로 실행 (폴더 선택 -> 빌드/자동 감시/튕김 검사)")
+
     st = sub.add_parser("stats", help="출력 폴더(들)의 프레임 수/아틀라스/용량/메모리 비교")
     st.add_argument("folders", type=Path, nargs="+")
 
     args = ap.parse_args(argv)
+
+    if args.cmd == "gui":
+        from . import gui
+        return gui.main()
 
     if args.cmd == "check":
         for f in args.folders:
