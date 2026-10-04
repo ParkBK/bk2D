@@ -5,3 +5,6 @@ out/
 *.mp4
 !examples/*.mp4
 work/
+build/
+dist/
+*.spec

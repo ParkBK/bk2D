@@ -2,10 +2,14 @@
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+# 창 없는 프로그램(bk2D.exe / pythonw)에서 ffmpeg 를 부를 때 검은 콘솔 창이 깜빡이지 않게 한다.
+_NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
 
 
 def require_ffmpeg():
@@ -18,7 +22,7 @@ def probe_fps(src: Path) -> float:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=r_frame_rate", "-of", "json", str(src)],
-        check=True, capture_output=True, text=True,
+        check=True, capture_output=True, text=True, **_NO_WINDOW,
     ).stdout
     num, den = json.loads(out)["streams"][0]["r_frame_rate"].split("/")
     return float(num) / float(den)
@@ -33,9 +37,9 @@ def extract_frames(src: Path, out_dir: Path, max_height: int) -> list[Path]:
     # 프레임 복제/누락 없이 원본 프레임 그대로 추출.
     # ffmpeg 5.1+ 는 -fps_mode, 7.0+ 에서 -vsync 제거됨. 구버전 대비 폴백.
     try:
-        subprocess.run(base + ["-fps_mode", "passthrough", out], check=True, capture_output=True)
+        subprocess.run(base + ["-fps_mode", "passthrough", out], check=True, capture_output=True, **_NO_WINDOW)
     except subprocess.CalledProcessError:
-        subprocess.run(base + ["-vsync", "0", out], check=True)
+        subprocess.run(base + ["-vsync", "0", out], check=True, capture_output=True, **_NO_WINDOW)
     frames = sorted(out_dir.glob("f_*.png"))
     if not frames:
         raise RuntimeError(f"{src} 에서 프레임을 추출하지 못했습니다.")

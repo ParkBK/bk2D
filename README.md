@@ -25,6 +25,11 @@ mp4 (클립별) ─▶ 프레임 추출 ─▶ 루프 구간 탐지(idle) ─▶
 
 선택한 폴더와 옵션은 `%USERPROFILE%\.bk2d_gui.json` 에 저장되어 다음 실행 때 그대로 열립니다.
 
+### exe 로 만들기
+
+`build_exe.bat` 를 더블클릭하면 `dist\bk2D.exe` 하나가 만들어집니다 (PyInstaller 자동 설치, 약 60MB).
+Python 없이 실행되지만 **ffmpeg 는 따로 설치되어 PATH 에 있어야** 합니다. 코드를 고친 뒤에는 다시 실행해 exe 를 갱신하세요.
+
 ## 빠른 작업 흐름 (watch 모드)
 
 새 동작 영상을 뽑을 때마다 자동으로 Unity 까지 반영:

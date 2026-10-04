@@ -227,7 +227,7 @@ class App(tk.Tk):
 
         st = ttk.Frame(root)
         st.pack(fill="x", **pad)
-        self.bar = ttk.Progressbar(st, mode="indeterminate", length=160)
+        self.bar = ttk.Progressbar(st, mode="determinate", length=160)  # 작업 중에만 indeterminate
         self.bar.pack(side="left")
         ttk.Label(st, textvariable=self.status).pack(side="left", padx=8)
 
@@ -356,6 +356,7 @@ class App(tk.Tk):
         self.busy = True
         self._set_buttons()
         self.status.set(label)
+        self.bar.config(mode="indeterminate")
         self.bar.start(12)
 
         def work():
@@ -374,7 +375,7 @@ class App(tk.Tk):
     def _finish(self, ok: bool, on_done):
         self.busy = False
         self.bar.stop()
-        self.bar["value"] = 0
+        self.bar.config(mode="determinate", value=0)
         self._set_buttons()
         self.refresh_clips()
         if on_done:
