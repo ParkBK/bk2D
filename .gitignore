@@ -4,3 +4,4 @@ __pycache__/
 out/
 *.mp4
 !examples/*.mp4
+work/
