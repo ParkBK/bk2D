@@ -212,3 +212,37 @@ def test_profiles_build_two_variants(tmp_path):
     # 원본 캐릭터 높이 200px -> lobby 300 은 확대 경고가 있어야 함
     assert any("확대" in n for n in rep["lobby"]["clips"][0]["notes"])
     assert not any("확대" in n for n in rep["battle"]["clips"][0]["notes"])
+
+
+def _feet_positions(out_png: Path, meta_json: Path):
+    """각 셀에서 캐릭터 하단 중앙(발) 위치."""
+    meta = json.loads(meta_json.read_text())
+    atlas = np.asarray(Image.open(out_png).convert("RGBA"))
+    H = atlas.shape[0]
+    pos = []
+    for f in meta["frames"]:
+        top = H - f["y"] - f["h"]
+        cell = atlas[top:top + f["h"], f["x"]:f["x"] + f["w"], 3] > 128
+        ys, xs = np.nonzero(cell)
+        bottom = ys.max()
+        pos.append((xs[ys >= bottom - 3].mean(), bottom))
+    return np.array(pos)
+
+
+@pytest.mark.parametrize("stab", ["none", "feet"])
+def test_stabilize_removes_whole_body_jitter(tmp_path, stab):
+    rng = np.random.default_rng(0)
+    jitter = rng.integers(-5, 6, size=(36, 2))
+    size = (480, 360)
+    _make_clip(tmp_path, "idle", 36, lambda i: _draw_char(
+        size, 240 + jitter[i][0], 330 + jitter[i][1], 1.0, bob=4 * math.sin(2 * math.pi * i / 36)))
+    cfg = {"name": "x", "default": "idle", "height": "source", "fps": 24, "stabilize": stab,
+           "clips": [{"name": "idle", "src": "idle.mp4", "loop": True}]}
+    (tmp_path / "x.json").write_text(json.dumps(cfg))
+    build(CharacterSpec.load(tmp_path / "x.json"), tmp_path / "out", previews=False, log=lambda *_: None)
+    pos = _feet_positions(tmp_path / "out" / "x_idle.png", tmp_path / "out" / "x_idle.json")
+    spread = (pos.max(axis=0) - pos.min(axis=0)).max()
+    if stab == "none":
+        assert spread >= 6       # 보정 없으면 발이 흔들림
+    else:
+        assert spread <= 2.5     # 보정하면 발 고정 (압축·측정 오차 ~2px)

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from . import layout, matte, timing, video
+from . import layout, matte, stabilize, timing, video
 
 
 @dataclass
@@ -17,6 +17,7 @@ class ClipSpec:
     loop: bool = False
     fps: float | None = None
     loop_seconds: tuple[float, float] | None = None  # 루프 길이 탐색 범위 (최소, 최대)
+    stabilize: str | None = None      # feet | body | none. None 이면 루프 클립은 feet, 나머지는 none
 
 
 @dataclass
@@ -64,7 +65,8 @@ class CharacterSpec:
             return tuple(r) if r else None
         clips = [ClipSpec(name=c["name"], src=(base / c["src"]).resolve(),
                           loop=c.get("loop", False), fps=c.get("fps"),
-                          loop_seconds=loop_range(c) or loop_range(raw))
+                          loop_seconds=loop_range(c) or loop_range(raw),
+                          stabilize=c.get("stabilize", raw.get("stabilize")))
                  for c in raw["clips"]]
         key = raw.get("key", {})
         return CharacterSpec(
@@ -158,6 +160,13 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log,
         kind = "잡티 가능성 큼 (despeckle 권장)" if max(hits) < 30 else "실제로 잘렸을 가능성 큼"
         notes.append(f"경고: 화면 {side} 끝에 닿음 — {len(hits)}/{len(frames)} 프레임, "
                      f"최대 {max(hits)}px → {kind}")
+
+    mode = spec.stabilize or ("feet" if spec.loop else "none")
+    if mode != "none":
+        frames, shifts = stabilize.stabilize(frames, mode)
+        drift = max(max(abs(dx), abs(dy)) for dx, dy in shifts)
+        if drift > 0:
+            notes.append(f"흔들림 보정({mode}): 최대 {drift}px 이동 되돌림 (원본 해상도 기준)")
 
     if target_height is None:  # "source": 이 클립(기준 클립)의 원본 크기를 그대로 쓴다
         box = layout.alpha_bbox(frames[0])
