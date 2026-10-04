@@ -66,7 +66,7 @@ namespace Bk2d.Editor
             if (!File.Exists(controllerPath))
                 CreateController(controllerPath, ch.@default, clips);
             else
-                Debug.Log($"[bk2D] {controllerPath} 가 이미 있어 상태머신은 건드리지 않았습니다 (클립만 갱신).");
+                AddMissingStates(controllerPath, ch.@default, clips);
 
             AssetDatabase.SaveAssets();
             Debug.Log($"[bk2D] {ch.name}: 클립 {clips.Count}개 가져옴");
@@ -162,33 +162,100 @@ namespace Bk2d.Editor
             var hubState = sm.AddState(hub);
             hubState.motion = clips[hub].anim;
             sm.defaultState = hubState;
-
             foreach (var kv in clips.Where(kv => kv.Key != hub))
-            {
-                var state = sm.AddState(kv.Key);
-                state.motion = kv.Value.anim;
-                var enter = sm.AddAnyStateTransition(state);
-                enter.canTransitionToSelf = false;
-                enter.hasExitTime = false;
-                enter.duration = 0;
-                var back = state.AddTransition(hubState);
-                back.duration = 0;
+                AddActionState(ctrl, sm, hubState, kv.Key, kv.Value.anim, kv.Value.loop);
+        }
 
-                if (kv.Value.loop)
-                {
-                    ctrl.AddParameter(kv.Key, AnimatorControllerParameterType.Bool);
-                    enter.AddCondition(AnimatorConditionMode.If, 0, kv.Key);
-                    back.hasExitTime = false;
-                    back.AddCondition(AnimatorConditionMode.IfNot, 0, kv.Key);
-                }
-                else
-                {
-                    ctrl.AddParameter(kv.Key, AnimatorControllerParameterType.Trigger);
-                    enter.AddCondition(AnimatorConditionMode.If, 0, kv.Key);
-                    back.hasExitTime = true;
-                    back.exitTime = 1f;
-                }
+        // 이미 있는 컨트롤러: 사용자가 손댄 상태/전이는 그대로 두고, 새 클립의 상태만 추가한다.
+        static void AddMissingStates(string path, string hub,
+            Dictionary<string, (AnimationClip anim, bool loop)> clips)
+        {
+            var ctrl = AssetDatabase.LoadAssetAtPath<AnimatorController>(path);
+            var sm = ctrl.layers[0].stateMachine;
+            var existing = sm.states.Select(s => s.state).ToDictionary(s => s.name);
+            if (!existing.TryGetValue(hub, out var hubState))
+            {
+                hubState = sm.AddState(hub);
+                hubState.motion = clips[hub].anim;
+                sm.defaultState = hubState;
             }
+            var added = new List<string>();
+            foreach (var kv in clips.Where(kv => kv.Key != hub && !existing.ContainsKey(kv.Key)))
+            {
+                AddActionState(ctrl, sm, hubState, kv.Key, kv.Value.anim, kv.Value.loop);
+                added.Add(kv.Key);
+            }
+            EditorUtility.SetDirty(ctrl);
+            if (added.Count > 0)
+                Debug.Log($"[bk2D] {path}: 새 상태 추가 {string.Join(", ", added)}");
+        }
+
+        static void AddActionState(AnimatorController ctrl, AnimatorStateMachine sm, AnimatorState hubState,
+            string name, AnimationClip anim, bool loop)
+        {
+            var state = sm.AddState(name);
+            state.motion = anim;
+            var enter = sm.AddAnyStateTransition(state);
+            enter.canTransitionToSelf = false;
+            enter.hasExitTime = false;
+            enter.duration = 0;
+            var back = state.AddTransition(hubState);
+            back.duration = 0;
+
+            if (ctrl.parameters.All(p => p.name != name))
+                ctrl.AddParameter(name, loop ? AnimatorControllerParameterType.Bool
+                                             : AnimatorControllerParameterType.Trigger);
+            enter.AddCondition(AnimatorConditionMode.If, 0, name);
+            if (loop)
+            {
+                back.hasExitTime = false;
+                back.AddCondition(AnimatorConditionMode.IfNot, 0, name);
+            }
+            else
+            {
+                back.hasExitTime = true;
+                back.exitTime = 1f;
+            }
+        }
+    }
+
+    // bk2d 가 *.character.json 을 새로 쓰면(빌드마다 내용이 바뀜) 우클릭 없이 자동으로 가져온다.
+    // 메뉴 Tools > bk2D > Auto Import 로 끄고 켤 수 있다.
+    public class Bk2dAutoImport : AssetPostprocessor
+    {
+        const string Pref = "bk2d.autoImport";
+        const string Menu = "Tools/bk2D/Auto Import";
+
+        static bool Enabled
+        {
+            get => EditorPrefs.GetBool(Pref, true);
+            set => EditorPrefs.SetBool(Pref, value);
+        }
+
+        [MenuItem(Menu)]
+        static void Toggle() => Enabled = !Enabled;
+
+        [MenuItem(Menu, true)]
+        static bool ToggleValidate()
+        {
+            UnityEditor.Menu.SetChecked(Menu, Enabled);
+            return true;
+        }
+
+        static void OnPostprocessAllAssets(string[] imported, string[] deleted, string[] moved, string[] movedFrom)
+        {
+            if (!Enabled) return;
+            var targets = imported.Where(p => p.EndsWith(".character.json")).ToArray();
+            if (targets.Length == 0) return;
+            // 임포트 콜백 안에서 다른 에셋을 임포트하면 안 되므로 다음 에디터 틱으로 미룬다.
+            EditorApplication.delayCall += () =>
+            {
+                foreach (var p in targets)
+                {
+                    try { Bk2dImporter.ImportCharacter(p); }
+                    catch (System.Exception e) { Debug.LogError($"[bk2D] 자동 임포트 실패 {p}: {e}"); }
+                }
+            };
         }
     }
 }

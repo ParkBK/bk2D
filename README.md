@@ -14,6 +14,25 @@ mp4 (클립별) ─▶ 프레임 추출 ─▶ 루프 구간 탐지(idle) ─▶
 
 **먼저 읽을 것: [docs/GENERATION_GUIDE.md](docs/GENERATION_GUIDE.md)** — 원본 영상 생성 규칙. 결과 품질의 대부분이 여기서 결정됩니다.
 
+## 빠른 작업 흐름 (watch 모드)
+
+새 동작 영상을 뽑을 때마다 자동으로 Unity 까지 반영:
+
+```bash
+python -m bk2d watch work -o C:\MyGame\Assets\Characters\hero
+```
+
+1. Higgsfield 에서 받은 mp4 를 `work` 폴더에 **클립 이름으로** 저장 (`attack_2.mp4`, `walk.mp4` ...)
+   - 이름에 idle/walk/run/loop 가 있으면 반복, 아니면 1회 재생
+   - 이름이 `_` 로 시작하면 무시 (후보 보관용: `_attack_old.mp4`)
+2. 감시 중인 터미널이 자동으로 설정에 추가 → 전투/로비 두 벌 빌드 → Unity 폴더에 출력, QA 리포트 출력
+3. Unity 창으로 돌아가면 자동 임포트, 컨트롤러에 새 액션 상태(Trigger/Bool) 자동 추가
+   - 자동 임포트 끄기/켜기: Tools > bk2D > Auto Import
+   - 기존 상태·전이는 건드리지 않음 (손으로 고친 설정 유지)
+4. 미리보기(webp/gif)는 Unity 에 안 들어가도록 `work/_preview/` 에 저장
+
+`build` 도 실행 시 폴더의 mp4 와 clips 를 자동 동기화한다 (`--no-sync` 로 끔).
+
 ## 설치
 
 ```bash

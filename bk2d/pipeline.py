@@ -1,5 +1,6 @@
 """캐릭터 단위 빌드: 영상 여러 개 -> 같은 스케일/피벗을 공유하는 스프라이트시트 세트."""
 import json
+from datetime import datetime
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -180,7 +181,8 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log,
     return ClipResult(spec, frames, placement, out_fps, loop_score, notes)
 
 
-def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print) -> dict:
+def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print,
+          preview_dir: Path | None = None) -> dict:
     video.require_ffmpeg()
     if ch.default not in {c.name for c in ch.clips}:
         raise ValueError(f"default 클립 '{ch.default}' 이 clips 에 없습니다.")
@@ -211,7 +213,9 @@ def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print) ->
     base_thumb = _qa_thumb(rendered[ch.default][0])
 
     manifest = {"version": 1, "name": ch.name, "default": ch.default,
-                "pixelsPerUnit": ch.pixels_per_unit, "target": ch.target, "clips": []}
+                "pixelsPerUnit": ch.pixels_per_unit, "target": ch.target,
+                # 매 빌드마다 내용이 바뀌어야 Unity 가 재임포트(자동 임포트 트리거)한다.
+                "built": datetime.now().isoformat(timespec="seconds"), "clips": []}
     report = []
     for r in results:
         name = r.spec.name
@@ -244,8 +248,8 @@ def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print) ->
         manifest["clips"].append({"name": name, "json": f"{stem}.json", "loop": r.spec.loop})
 
         if previews:
-            prev = out_dir / "preview"
-            prev.mkdir(exist_ok=True)
+            prev = preview_dir or out_dir / "preview"
+            prev.mkdir(parents=True, exist_ok=True)
             dur = round(1000 / r.fps)
             cells[0].save(prev / f"{stem}.webp", save_all=True, append_images=cells[1:],
                           duration=dur, loop=0, lossless=True)

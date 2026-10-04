@@ -246,3 +246,42 @@ def test_stabilize_removes_whole_body_jitter(tmp_path, stab):
         assert spread >= 6       # 보정 없으면 발이 흔들림
     else:
         assert spread <= 2.5     # 보정하면 발 고정 (압축·측정 오차 ~2px)
+
+
+def test_sync_clips_adds_new_videos_and_ignores_underscore(tmp_path):
+    from bk2d import project
+    size = (480, 360)
+    _make_clip(tmp_path, "idle_1", 12, lambda i: _draw_char(size, 240, 330, 1.0))
+    cfg = {"name": "hero", "default": "idle_1", "clips": [project.clip_entry("idle_1.mp4")],
+           "profiles": {"lobby": {"only": ["idle_1"]}}}
+    p = tmp_path / "hero.json"
+    p.write_text(json.dumps(cfg))
+    assert project.sync_clips(p) == ([], [])
+    _make_clip(tmp_path, "attack_1", 12, lambda i: _draw_char(size, 240, 330, 1.0, arm=i / 11))
+    _make_clip(tmp_path, "_attack_old", 12, lambda i: _draw_char(size, 240, 330, 1.0))
+    _make_clip(tmp_path, "walk", 12, lambda i: _draw_char(size, 240, 330, 1.0))
+    added, removed = project.sync_clips(p)
+    assert added == ["attack_1", "walk"] and removed == []
+    clips = {c["name"]: c for c in json.loads(p.read_text())["clips"]}
+    assert clips["attack_1"]["loop"] is False and clips["walk"]["loop"] is True
+    (tmp_path / "idle_1.mp4").unlink()
+    added, removed = project.sync_clips(p)
+    raw = json.loads(p.read_text())
+    assert removed == ["idle_1"] and raw["default"] == "walk"
+    assert raw["profiles"]["lobby"]["only"] == ["walk"]
+
+
+def test_build_into_unity_assets_keeps_previews_out(tmp_path):
+    from bk2d.cli import main
+    work = tmp_path / "work"
+    work.mkdir()
+    size = (480, 360)
+    _make_clip(work, "idle_1", 12, lambda i: _draw_char(size, 240, 330, 1.0))
+    assert main(["init", str(work)]) == 0
+    _make_clip(work, "attack_1", 12, lambda i: _draw_char(size, 240, 330, 1.0, arm=i / 11))  # init 이후 추가
+    assets = tmp_path / "MyGame" / "Assets" / "Characters" / "hero"
+    assert main(["build", str(work / "hero.json"), "-o", str(assets)]) == 0
+    battle = json.loads((assets / "battle" / "hero_battle.character.json").read_text())
+    assert [c["name"] for c in battle["clips"]] == ["idle_1", "attack_1"] and "built" in battle
+    assert not list(assets.rglob("*.gif")) and not list(assets.rglob("*.webp"))
+    assert (work / "_preview" / "battle" / "hero_battle_attack_1.webp").exists()

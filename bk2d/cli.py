@@ -1,12 +1,17 @@
 """bk2d CLI.
 
-    python -m bk2d build examples/hero.json -o out/hero
+    python -m bk2d init  work                      # 폴더의 mp4 로 설정 파일 생성
+    python -m bk2d build work\\hero.json -o out\\hero
+    python -m bk2d watch work -o C:\\MyGame\\Assets\\Characters\\hero   # 영상 넣으면 자동 빌드
 """
 import argparse
 import json
 import sys
+import time
+import traceback
 from pathlib import Path
 
+from . import project
 from .pipeline import CharacterSpec, build
 from .timing import grade
 
@@ -26,16 +31,13 @@ def _print_report(rep: dict):
 
 
 def _init(folder: Path, name: str):
-    """폴더의 mp4 를 찾아 설정 파일을 만든다. 이름에 idle/loop/walk/run 이 들어가면 루프로 본다."""
+    """폴더의 mp4 를 찾아 설정 파일을 만든다."""
     folder.mkdir(parents=True, exist_ok=True)
     cfg_path = folder / f"{name}.json"
     if cfg_path.exists():
         print(f"{cfg_path} 가 이미 있습니다. 덮어쓰지 않습니다.")
         return 1
-    videos = sorted(p.name for p in folder.glob("*.mp4"))
-    loop_words = ("idle", "loop", "walk", "run")
-    clips = [{"name": Path(v).stem, "src": v, "loop": any(w in v.lower() for w in loop_words)}
-             for v in videos]
+    clips = [project.clip_entry(p.name) for p in sorted(folder.iterdir()) if project.is_video(p)]
     if not clips:
         clips = [{"name": "idle_1", "src": "idle_1.mp4", "loop": True}]
         print(f"{folder} 에 mp4 가 없어 예시 항목(idle_1.mp4)으로 만듭니다. 영상을 넣고 이름을 맞추세요.")
@@ -60,41 +62,118 @@ def _init(folder: Path, name: str):
     return 0
 
 
+def _preview_dir(cfg_path: Path, out: Path, prof: str | None) -> Path | None:
+    """출력이 Unity Assets 안이면 미리보기(webp/gif)는 작업 폴더로 뺀다 (Unity 에 잡파일 방지)."""
+    if "Assets" in out.resolve().parts:
+        return cfg_path.parent / "_preview" / (prof or "default")
+    return None
+
+
+def _build_all(cfg_path: Path, out: Path, only_profile: str | None, previews: bool, sync: bool):
+    if sync:
+        added, removed = project.sync_clips(cfg_path)
+        for n in added:
+            print(f"+ 새 클립 추가: {n}")
+        for n in removed:
+            print(f"- 영상이 없어 클립 제거: {n}")
+    profiles = [only_profile] if only_profile else CharacterSpec.profiles(cfg_path) or [None]
+    reports = {}
+    for prof in profiles:
+        spec = CharacterSpec.load(cfg_path, prof)
+        missing = [str(c.src) for c in spec.clips if not c.src.exists()]
+        if missing:
+            raise FileNotFoundError("영상 파일이 없습니다:\n  " + "\n  ".join(missing))
+        dst = out / prof if prof else out
+        print(f"\n=== {spec.name} (height {spec.height}, {spec.target}) -> {dst}")
+        rep = build(spec, dst, previews=previews, preview_dir=_preview_dir(cfg_path, out, prof))
+        _print_report(rep)
+        reports[prof or spec.name] = rep
+    return reports
+
+
+def _watch(folder: Path, out: Path, interval: float, previews: bool, name: str):
+    cfg_path = project.find_config(folder)
+    if cfg_path is None:
+        _init(folder, name)
+        cfg_path = project.find_config(folder)
+    print(f"감시 시작: {folder.resolve()}  (설정 {cfg_path.name}, 출력 {out})")
+    print("mp4 를 넣거나 바꾸면 자동으로 빌드합니다. 이름이 _ 로 시작하면 무시. 종료: Ctrl+C\n")
+
+    def run():
+        try:
+            _build_all(cfg_path, out, None, previews, sync=True)
+            print(f"\n[{time.strftime('%H:%M:%S')}] 완료. 다음 변경을 기다립니다...")
+        except Exception as e:  # 한 번 실패해도 감시는 계속
+            traceback.print_exc()
+            print(f"\n[{time.strftime('%H:%M:%S')}] 빌드 실패: {e}\n파일을 고치면 다시 시도합니다...")
+
+    run()
+    last = project.snapshot(folder)
+    try:
+        while True:
+            time.sleep(interval)
+            snap = project.snapshot(folder)
+            if snap == last:
+                continue
+            # 다운로드/복사 중인 파일을 피하려고 크기가 멈출 때까지 기다린다.
+            while True:
+                time.sleep(interval)
+                again = project.snapshot(folder)
+                if again == snap:
+                    break
+                snap = again
+            changed = sorted(k for k in set(snap) | set(last) if snap.get(k) != last.get(k))
+            print(f"\n[{time.strftime('%H:%M:%S')}] 변경 감지: {', '.join(changed)}")
+            run()
+            last = project.snapshot(folder)  # 빌드 중 우리가 쓴 설정 파일 변경은 무시
+    except KeyboardInterrupt:
+        print("\n감시 종료")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="bk2d", description="AI 생성 영상 -> Unity 스프라이트 애니메이션")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    i = sub.add_parser("init", help="폴더의 mp4 를 찾아 설정 파일을 자동 생성")
+    i.add_argument("folder", type=Path)
+    i.add_argument("--name", default="hero")
+
     b = sub.add_parser("build", help="캐릭터 설정 JSON 으로 스프라이트시트 세트를 만든다")
     b.add_argument("config", type=Path)
     b.add_argument("-o", "--out", type=Path, required=True)
     b.add_argument("--no-preview", action="store_true")
     b.add_argument("--report", type=Path, help="QA 리포트를 JSON 으로 저장")
     b.add_argument("--profile", help="이 프로필만 빌드 (없으면 profiles 전체를 out/<프로필> 로)")
-    i = sub.add_parser("init", help="폴더의 mp4 를 찾아 설정 파일을 자동 생성")
-    i.add_argument("folder", type=Path)
-    i.add_argument("--name", default="hero")
+    b.add_argument("--no-sync", action="store_true", help="폴더의 mp4 와 clips 를 동기화하지 않음")
+
+    w = sub.add_parser("watch", help="폴더를 감시하다가 영상이 추가/변경되면 자동 빌드")
+    w.add_argument("folder", type=Path)
+    w.add_argument("-o", "--out", type=Path, required=True,
+                   help="출력 폴더. Unity 프로젝트의 Assets 아래로 지정하면 바로 반영됨")
+    w.add_argument("--interval", type=float, default=2.0)
+    w.add_argument("--no-preview", action="store_true")
+    w.add_argument("--name", default="hero", help="설정 파일이 없을 때 만들 캐릭터 이름")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "init":
         return _init(args.folder, args.name)
+
+    if args.cmd == "watch":
+        return _watch(args.folder, args.out, args.interval, not args.no_preview, args.name)
 
     if args.cmd == "build":
         if not args.config.exists():
             print(f"설정 파일이 없습니다: {args.config}\n"
                   f"먼저: python -m bk2d init {args.config.parent} --name {args.config.stem}")
             return 1
-        profiles = [args.profile] if args.profile else CharacterSpec.profiles(args.config) or [None]
-        reports = {}
-        for prof in profiles:
-            spec = CharacterSpec.load(args.config, prof)
-            missing = [str(c.src) for c in spec.clips if not c.src.exists()]
-            if missing:
-                print("영상 파일이 없습니다:\n  " + "\n  ".join(missing))
-                return 1
-            out = args.out / prof if prof else args.out
-            print(f"\n=== {spec.name} (height {spec.height}, {spec.target}) -> {out}")
-            rep = build(spec, out, previews=not args.no_preview)
-            _print_report(rep)
-            reports[prof or spec.name] = rep
+        try:
+            reports = _build_all(args.config, args.out, args.profile, not args.no_preview,
+                                 sync=not args.no_sync)
+        except FileNotFoundError as e:
+            print(e)
+            return 1
         if args.report:
             args.report.write_text(json.dumps(reports, indent=2, ensure_ascii=False), encoding="utf-8")
     return 0
