@@ -82,6 +82,13 @@ bad              12    12  968x876       0.001 OK   0.169 튐          -
     "lobby":  { "height": 1024, "only": ["idle_1"], "target": "ui" }
   }
   ```
+- `max_frames`: 저장 프레임 수 상한 (전역 / 프로필 / 클립 / 프로필의 `clip_overrides`). 루프는 상한 안에서 루프 지점을 다시 찾고, 1회 클립은 길이를 유지한 채 fps 를 낮춘다(끝 프레임 보존).
+- `loop_seconds`: `[최소, 최대]`. 최대값은 **하드 상한** — 루프 재생 길이는 항상 `loop_seconds[1] * fps` 프레임 이하.
+- `pingpong`: 루프를 정방향+역방향 재생(0→반환점→0)으로. 저장 프레임이 재생 프레임의 절반+1. 반환점은 기준 포즈와 가장 먼(동작 끝점) 프레임. 숨쉬기처럼 대칭인 동작에 적합, 머리카락이 한 방향으로 흐르는 동작은 역재생이 어색할 수 있음.
+- `max_texture`: 아틀라스 한 장 최대 크기(기본 2048, 모바일 호환). 넘으면 `_p0.png, _p1.png ...` 여러 장으로 분할. **분할은 "한 장이 너무 커서 못 올리는" 문제만 해결하고 총 메모리는 줄이지 않는다** — 메모리는 height/fps/프레임 수로 줄인다.
+- `trim`: 프레임별 투명 여백 제거 + 타이트 패킹(기본 켜짐). 각 스프라이트의 피벗이 공통 발밑 지점을 가리키도록 프레임별로 저장되어 Unity 에서 위치가 그대로 유지된다. `target: "ui"` 에서는 자동으로 꺼짐(UI Image 는 스프라이트 크기에 맞춰 늘어나기 때문).
+- `unity`: Unity 임포트 시 텍스처 설정. `{"format": "ASTC_6x6", "max_texture_size": 2048, "platforms": ["Android", "iPhone"]}` — 프로필별로 다르게 줄 수 있다.
+- 클립 `meta`: 생성 메타데이터 수동 입력 `{"service", "model", "seed", "prompt", "reference"}`. 클립 JSON 에 툴 버전, 원본 파일명/SHA1, 빌드 시각과 함께 기록된다.
 - `target`: `"sprite"`(기본, SpriteRenderer) 또는 `"ui"`(Canvas 의 UI Image). 생성되는 .anim 의 대상 컴포넌트가 달라진다.
 - `stabilize`: 프레임 간 흔들림 보정. `"feet"`(발 영역을 첫 프레임에 고정), `"body"`(전신 기준), `"none"`. 전역 또는 클립별. 기본은 루프 클립 feet, 1회 클립 none (공격 시 앞으로 내딛는 등 의도된 이동을 지우지 않도록). 프레임마다 디테일이 다시 그려지는 꿈틀거림은 이동이 아니라 보정되지 않는다.
 - `height`: 출력 캐릭터 높이(px). `"source"` 면 기준 클립 원본 크기 그대로(축소 없음, 화질 최대·메모리 최대). 게임 화면에 표시되는 최대 크기보다 작으면 Unity 에서 확대되어 흐려진다.
@@ -106,6 +113,26 @@ bad              12    12  968x876       0.001 OK   0.169 튐          -
   - 컨트롤러가 이미 있으면 덮어쓰지 않고 클립만 갱신 (재임포트해도 spriteID 유지)
 
 > 이 임포터는 Unity 에서 컴파일 검증을 아직 하지 않았습니다. 첫 사용 시 콘솔 에러를 확인하세요.
+
+## 용량 확인 / 비교
+
+빌드가 끝나면 프로필별로 PNG 용량, 비압축 RGBA 메모리, ASTC 6x6 / 8x8 추정 메모리를 출력한다.
+기존 출력과 비교:
+
+```bash
+python -m bk2d stats out\hero out\hero_v2
+```
+
+**PNG 용량은 디스크 크기일 뿐이고, 게임 메모리는 RGBA/ASTC 값으로 판단한다.**
+
+## Unity 임포터 컴파일 검사
+
+```bash
+unity/ci/compile_check.sh   # mono(mcs), curl, unzip 필요
+```
+
+실제 UnityEngine(2021.3)/UnityEditor(2018.1) 참조 DLL 을 NuGet 에서 받아 컴파일한다. 2D Sprite 패키지 API 만 스텁(`unity/ci/U2DSpritesStubs.cs`)이다.
+UnityEditor 가 2018.1 이라 2019 이후에만 있는 API 사용은 이 검사로 잡히지 않는다.
 
 ## 테스트
 

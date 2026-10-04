@@ -1,4 +1,5 @@
 """캐릭터 단위 빌드: 영상 여러 개 -> 같은 스케일/피벗을 공유하는 스프라이트시트 세트."""
+import hashlib
 import json
 from datetime import datetime
 import tempfile
@@ -8,7 +9,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from . import layout, matte, stabilize, timing, video
+from . import __version__, layout, matte, stabilize, timing, video
+from . import report as report_mod
 
 
 @dataclass
@@ -19,6 +21,9 @@ class ClipSpec:
     fps: float | None = None
     loop_seconds: tuple[float, float] | None = None  # 루프 길이 탐색 범위 (최소, 최대)
     stabilize: str | None = None      # feet | body | none. None 이면 루프 클립은 feet, 나머지는 none
+    max_frames: int | None = None     # 저장 프레임 수 상한
+    pingpong: bool = False            # 루프를 정방향+역방향 재생으로 (저장 프레임 약 절반)
+    meta: dict = field(default_factory=dict)  # 생성 메타데이터(서비스, 시드, 프롬프트, 레퍼런스 등) 수동 입력
 
 
 @dataclass
@@ -38,9 +43,11 @@ class CharacterSpec:
     max_extract_height: int = 2160    # 1080P 세로(3:4 = 1440px)도 줄이지 않도록
     padding: int = 4
     spacing: int = 2
-    max_atlas: int = 8192
+    max_texture: int = 2048           # 아틀라스 한 장 최대 크기. 넘으면 여러 장으로 분할
+    trim: bool = True                 # 프레임별 투명 여백 잘라내기 (target=ui 에서는 항상 끔)
     pixels_per_unit: int = 100
     target: str = "sprite"            # sprite = SpriteRenderer, ui = UI Image (Canvas)
+    unity: dict = field(default_factory=dict)  # Unity 텍스처 설정 (format, max_texture_size, platforms)
 
     @staticmethod
     def profiles(path: Path) -> list[str]:
@@ -54,6 +61,7 @@ class CharacterSpec:
             # 프로필 값이 상위 값을 덮어쓴다. "only" 로 클립을 고를 수 있다.
             prof = dict(raw.get("profiles", {})[profile])
             only = prof.pop("only", None)
+            overrides = prof.pop("clip_overrides", {})
             raw = {**raw, **prof, "name": f"{raw['name']}_{profile}"}
             if only:
                 raw["clips"] = [c for c in raw["clips"] if c["name"] in only]
@@ -61,13 +69,18 @@ class CharacterSpec:
                     raise ValueError(f"프로필 '{profile}' 의 only {only} 에 해당하는 클립이 없습니다.")
                 if raw.get("default") not in only:
                     raw["default"] = raw["clips"][0]["name"]
+            # 프로필 안에서 특정 클립만 덮어쓰기: "clip_overrides": {"attack_1": {"max_frames": 16}}
+            raw["clips"] = [{**c, **overrides.get(c["name"], {})} for c in raw["clips"]]
         def loop_range(d):
             r = d.get("loop_seconds")
             return tuple(r) if r else None
         clips = [ClipSpec(name=c["name"], src=(base / c["src"]).resolve(),
                           loop=c.get("loop", False), fps=c.get("fps"),
                           loop_seconds=loop_range(c) or loop_range(raw),
-                          stabilize=c.get("stabilize", raw.get("stabilize")))
+                          stabilize=c.get("stabilize", raw.get("stabilize")),
+                          max_frames=c.get("max_frames", raw.get("max_frames")),
+                          pingpong=bool(c.get("pingpong", raw.get("pingpong", False))),
+                          meta=dict(c.get("meta", {})))
                  for c in raw["clips"]]
         key = raw.get("key", {})
         return CharacterSpec(
@@ -81,9 +94,11 @@ class CharacterSpec:
             alpha_smooth=key.get("temporal_smooth", 0.0),
             max_extract_height=raw.get("max_extract_height", 2160),
             padding=raw.get("padding", 4), spacing=raw.get("spacing", 2),
-            max_atlas=raw.get("max_atlas", 8192),
+            max_texture=raw.get("max_texture", 2048),
+            trim=raw.get("trim", True),
             pixels_per_unit=raw.get("pixels_per_unit", 100),
             target=raw.get("target", "sprite"),
+            unity=dict(raw.get("unity", {})),
         )
 
 
@@ -95,6 +110,8 @@ class ClipResult:
     fps: float
     loop_score: float | None = None
     notes: list[str] = field(default_factory=list)
+    sequence: list[int] | None = None  # 재생 순서 (핑퐁). None 이면 0..n-1
+    log: dict = field(default_factory=dict)  # 진단용: 실제 적용된 값
 
 
 def _qa_thumb(img: Image.Image, size: int = 96) -> np.ndarray:
@@ -112,21 +129,68 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log,
     notes = []
     loop_score = None
 
+    dst_fps = spec.fps or ch.fps
+    out_fps = min(dst_fps, src_fps)
+    n_src = len(paths)
+    max_frames = spec.max_frames
+    sequence = None
+    diag = {"srcFrames": n_src, "srcFps": round(src_fps, 3), "fps": out_fps, "maxFrames": max_frames}
+
     if spec.loop:
         thumbs = [video.load_thumb(p) for p in paths]
-        if spec.loop_seconds:
-            lo_s, hi_s = spec.loop_seconds
-            end, loop_score = timing.find_loop_end(thumbs, round(lo_s * src_fps), round(hi_s * src_fps))
-        else:
-            end, loop_score = timing.find_loop_end(thumbs)
-        if end < len(paths):
-            notes.append(f"루프 구간 {end}/{len(paths)} 프레임 ({end / src_fps:.2f}초)으로 자름")
-        paths = paths[:end]
+        lo_s, hi_s = spec.loop_seconds or (None, None)
+        # 재생 길이 상한(출력 프레임): loop_seconds[1] * fps, max_frames (핑퐁은 저장 k 장 -> 재생 2k-2 장)
+        caps = []
+        if hi_s:
+            caps.append(int(hi_s * out_fps + 1e-6))
+        if max_frames:
+            caps.append(2 * max_frames - 2 if spec.pingpong else max_frames)
+        cap_out = min(caps) if caps else None
+        # 출력 프레임 상한 -> 원본 프레임 상한. end*out/src <= cap_out 이면 반올림해도 cap_out 이하.
+        hi_src = min(n_src - 1, int(cap_out * src_fps / out_fps)) if cap_out else None
+        lo_src = round(lo_s * src_fps) if lo_s else None
+        if hi_src is not None and lo_src is not None:
+            lo_src = min(lo_src, hi_src)
+        diag.update(loopSeconds=[lo_s, hi_s], loopCapFrames=cap_out, searchSrc=[lo_src, hi_src])
 
-    dst_fps = spec.fps or ch.fps
-    idx = timing.resample_indices(len(paths), src_fps, dst_fps)
-    paths = [paths[i] for i in idx]
-    out_fps = dst_fps if dst_fps < src_fps else src_fps
+        if spec.pingpong:
+            # 0 -> 반환점 -> 0. 반환점은 루프 반주기 범위에서 기준 포즈와 가장 먼 프레임.
+            turn_hi = hi_src // 2 if hi_src else n_src // 2
+            turn_lo = (lo_src or 2) // 2
+            turn, _ = timing.find_pingpong_turn(thumbs, turn_lo, turn_hi)
+            loop_score = 0.0
+            n_out = max(2, round(turn * out_fps / src_fps) + 1)
+            if max_frames:
+                n_out = min(n_out, max_frames)
+            idx = timing.spaced_inclusive(turn + 1, n_out)
+            paths = [paths[i] for i in idx]
+            sequence = list(range(len(paths))) + list(range(len(paths) - 2, 0, -1))
+            notes.append(f"핑퐁: 0→{turn}→0 원본 프레임 ({2 * turn / src_fps:.2f}초), 저장 {len(paths)}장 / 재생 {len(sequence)}장")
+            diag.update(pingpongTurnSrc=turn)
+        else:
+            if lo_src is not None or hi_src is not None:
+                end, loop_score = timing.find_loop_end(thumbs, lo_src, hi_src)
+            else:
+                end, loop_score = timing.find_loop_end(thumbs)
+            if end < n_src:
+                notes.append(f"루프 구간 {end}/{n_src} 프레임 ({end / src_fps:.2f}초)으로 자름")
+            paths = paths[:end]
+            idx = timing.resample_indices(len(paths), src_fps, dst_fps)
+            paths = [paths[i] for i in idx]
+            if cap_out and len(paths) > cap_out:  # 안전장치: 어떤 경우에도 상한 초과 금지
+                paths = [paths[i] for i in timing.resample_indices(len(paths), len(paths), cap_out)]
+            diag.update(loopEndSrc=end)
+    else:
+        # 1회 재생은 마지막 프레임(기준 포즈 복귀)이 반드시 포함돼야 한다. 양 끝 포함 균등 샘플링.
+        n_out = max(1, round((n_src - 1) * out_fps / src_fps) + 1)
+        paths = [paths[i] for i in timing.spaced_inclusive(n_src, n_out)]
+        if max_frames and len(paths) > max_frames:
+            # 1회 재생은 동작을 자르면 기준 포즈 복귀가 사라지므로, 길이는 유지하고 fps 를 낮춘다.
+            dur = n_src / src_fps
+            paths = [paths[i] for i in timing.spaced_inclusive(len(paths), max_frames)]
+            out_fps = round(max_frames / dur, 3)
+            notes.append(f"max_frames {max_frames}: 길이 {dur:.2f}초 유지, 실효 fps {out_fps:g} 로 낮춤")
+    diag.update(frames=len(paths), fps=out_fps)
 
     rgbs = [video.load_rgb(p) for p in paths]
     if ch.key_mode == "chroma":
@@ -175,10 +239,13 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log,
             raise RuntimeError("첫 프레임에서 캐릭터를 찾지 못했습니다. 키 색/허용치를 확인하세요.")
         target_height = box[3] - box[1]
     placement = layout.placement_from_base(frames[0], target_height)
+    diag.update(targetHeight=target_height, scale=round(placement.scale, 4))
     if placement.scale > 1.05:
         notes.append(f"경고: 원본보다 {placement.scale:.2f}배 확대됨 — 흐려짐. 더 높은 해상도(1080P)로 생성하거나 height 를 낮추세요")
-    log(f"  [{spec.name}] {len(frames)} 프레임 @ {out_fps:g}fps")
-    return ClipResult(spec, frames, placement, out_fps, loop_score, notes)
+    log(f"  [{spec.name}] 적용값: 원본 {n_src}프레임@{src_fps:g}fps -> {len(frames)}프레임@{out_fps:g}fps"
+        f" (loop_seconds={list(spec.loop_seconds) if spec.loop_seconds else None}, 상한 {diag.get('loopCapFrames')},"
+        f" max_frames={max_frames}, pingpong={spec.pingpong}), height {target_height}, scale {placement.scale:.3f}")
+    return ClipResult(spec, frames, placement, out_fps, loop_score, notes, sequence, diag)
 
 
 def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print,
@@ -212,22 +279,24 @@ def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print,
                 for r in results}
     base_thumb = _qa_thumb(rendered[ch.default][0])
 
-    manifest = {"version": 1, "name": ch.name, "default": ch.default,
-                "pixelsPerUnit": ch.pixels_per_unit, "target": ch.target,
+    trim = ch.trim and ch.target != "ui"  # UI Image 는 스프라이트 크기에 맞춰 늘어나므로 트리밍 불가
+    unity = {
+        "maxTextureSize": int(ch.unity.get("max_texture_size", ch.max_texture)),
+        "format": ch.unity.get("format", "ASTC_6x6"),
+        "platforms": ch.unity.get("platforms", ["Android", "iPhone"]),
+    }
+    built = datetime.now().isoformat(timespec="seconds")
+    manifest = {"version": 2, "name": ch.name, "default": ch.default,
+                "pixelsPerUnit": ch.pixels_per_unit, "target": ch.target, "unity": unity,
                 # 매 빌드마다 내용이 바뀌어야 Unity 가 재임포트(자동 임포트 트리거)한다.
-                "built": datetime.now().isoformat(timespec="seconds"), "clips": []}
+                "built": built, "clips": []}
     report = []
     for r in results:
         name = r.spec.name
         cells = rendered[name]
-        atlas, rects = layout.pack_grid(cells, ch.spacing, ch.max_atlas)
-        if max(atlas.size) > ch.max_atlas:
-            r.notes.append(f"경고: 아틀라스 {atlas.size} 가 {ch.max_atlas} 초과 — fps/height 를 낮추세요")
-        elif max(atlas.size) > 4096:
-            r.notes.append(f"참고: 아틀라스 {atlas.size[0]}x{atlas.size[1]} — 4096 초과라 일부 저사양 모바일에서 미지원")
         stem = f"{ch.name}_{name}"
-        atlas.save(out_dir / f"{stem}.png", optimize=True)
 
+        # QA 는 기존과 동일하게 트리밍 전 공통 셀 기준으로 계산
         first, last = _qa_thumb(cells[0]), _qa_thumb(cells[-1])
         qa = {
             "startToBase": round(timing.frame_diff(first, base_thumb), 4),
@@ -236,13 +305,50 @@ def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print,
         if r.spec.loop:
             qa["loopSeam"] = round(timing.frame_diff(last, first), 4)
 
+        # 프레임별 트리밍 -> 페이지 분할 패킹. 각 프레임 피벗은 공통 셀 피벗(발밑)을 그대로 가리킨다.
+        pieces = [layout.trim(c) if trim else (c, (0, 0)) for c in cells]
+        pages, rects = layout.pack_pages([p for p, _ in pieces], ch.spacing, ch.max_texture)
+        images = [f"{stem}.png"] if len(pages) == 1 else [f"{stem}_p{i}.png" for i in range(len(pages))]
+        for img, fn in zip(pages, images):
+            img.save(out_dir / fn, optimize=True)
+        for old in out_dir.glob(f"{stem}_p*.png"):  # 이전 빌드에서 남은 페이지 정리
+            if old.name not in images:
+                old.unlink()
+        if len(images) > 1 and (out_dir / f"{stem}.png").exists():
+            (out_dir / f"{stem}.png").unlink()
+
+        frames_json = []
+        for i, ((piece, (ox, oy)), rect) in enumerate(zip(pieces, rects)):
+            w, h = piece.size
+            frames_json.append({
+                "name": f"{stem}_{i:03d}", **rect,
+                "pivot": {"x": round((cell.pivot_x - ox) / w, 6),
+                          "y": round(1.0 - (cell.pivot_y - oy) / h, 6)},
+                "trim": {"x": ox, "y": cell.h - oy - h, "w": w, "h": h},
+            })
+        trimmed_px = sum(p.size[0] * p.size[1] for p, _ in pieces)
+        if trim:
+            r.notes.append(f"트리밍: 셀 대비 픽셀 {100 * trimmed_px / (cell.w * cell.h * len(cells)):.0f}%")
+        if len(pages) > 1:
+            r.notes.append(f"아틀라스 {len(pages)}장으로 분할 (max_texture {ch.max_texture})")
+        if max(max(pg.size) for pg in pages) > unity["maxTextureSize"]:
+            r.notes.append(f"경고: 페이지가 unity.max_texture_size {unity['maxTextureSize']} 보다 큼 — Unity 가 축소(흐려짐)")
+
+        playback = "pingpong" if r.sequence else ("loop" if r.spec.loop else "once")
+        meta = {**r.spec.meta, "tool": f"bk2d {__version__}", "source": r.spec.src.name,
+                "sourceSha1": _sha1(r.spec.src), "built": built}
         clip_json = {
-            "version": 1, "character": ch.name, "clip": name, "image": f"{stem}.png",
-            "fps": r.fps, "loop": r.spec.loop, "pixelsPerUnit": ch.pixels_per_unit,
+            "version": 2, "character": ch.name, "clip": name,
+            "image": images[0], "images": images,
+            "pageSizes": [{"w": pg.size[0], "h": pg.size[1]} for pg in pages],
+            "fps": r.fps, "loop": r.spec.loop, "playback": playback,
+            "pixelsPerUnit": ch.pixels_per_unit,
             "cell": {"w": cell.w, "h": cell.h}, "pivot": pivot,
-            "frames": [{"name": f"{stem}_{i:03d}", **rect} for i, rect in enumerate(rects)],
-            "qa": qa,
+            "frames": frames_json,
+            "qa": qa, "meta": meta, "applied": r.log,
         }
+        if r.sequence:
+            clip_json["sequence"] = r.sequence
         (out_dir / f"{stem}.json").write_text(json.dumps(clip_json, indent=2, ensure_ascii=False),
                                               encoding="utf-8")
         manifest["clips"].append({"name": name, "json": f"{stem}.json", "loop": r.spec.loop})
@@ -250,19 +356,31 @@ def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print,
         if previews:
             prev = preview_dir or out_dir / "preview"
             prev.mkdir(parents=True, exist_ok=True)
+            seq = [cells[i] for i in (r.sequence or range(len(cells)))]
             dur = round(1000 / r.fps)
-            cells[0].save(prev / f"{stem}.webp", save_all=True, append_images=cells[1:],
-                          duration=dur, loop=0, lossless=True)
-            gray = [_over_gray(c) for c in cells]
+            seq[0].save(prev / f"{stem}.webp", save_all=True, append_images=seq[1:],
+                        duration=dur, loop=0, lossless=True)
+            gray = [_over_gray(c) for c in seq]
             gray[0].save(prev / f"{stem}.gif", save_all=True, append_images=gray[1:],
                          duration=dur, loop=0)
 
-        report.append({"clip": name, "frames": len(cells), "fps": r.fps,
-                       "atlas": list(atlas.size), "qa": qa, "notes": r.notes})
+        cost = report_mod.image_stats([out_dir / i for i in images])
+        report.append({"clip": name, "frames": len(cells), "fps": r.fps, "playback": playback,
+                       "atlas": [pg.size[0] for pg in pages[:1]] + [pg.size[1] for pg in pages[:1]],
+                       "pages": [list(pg.size) for pg in pages], "cost": cost,
+                       "applied": r.log, "qa": qa, "notes": r.notes})
 
     (out_dir / f"{ch.name}.character.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
-    return {"cell": [cell.w, cell.h], "pivot": pivot, "clips": report}
+    return {"name": ch.name, "cell": [cell.w, cell.h], "pivot": pivot, "clips": report}
+
+
+def _sha1(path: Path) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _over_gray(img: Image.Image) -> Image.Image:

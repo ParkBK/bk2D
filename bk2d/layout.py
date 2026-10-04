@@ -99,3 +99,75 @@ def pack_grid(cells: list[Image.Image], spacing: int, max_size: int):
         atlas.paste(img, (x, y))
         rects.append({"x": x, "y": h - y - ch, "w": cw, "h": ch})
     return atlas, rects
+
+
+def trim(img: Image.Image, bleed: int = 1) -> tuple[Image.Image, tuple[int, int]]:
+    """투명 여백을 잘라낸 이미지와, 원래 셀 안에서의 좌상단 위치.
+
+    bleed: 바이리니어 필터링 시 가장자리 번짐을 위해 남기는 투명 여백(px).
+    """
+    a = np.asarray(img)[..., 3]
+    ys, xs = np.nonzero(a > 0)
+    if len(xs) == 0:
+        return Image.new("RGBA", (4, 4), (0, 0, 0, 0)), (0, 0)
+    x0 = max(0, int(xs.min()) - bleed)
+    y0 = max(0, int(ys.min()) - bleed)
+    x1 = min(img.width, int(xs.max()) + 1 + bleed)
+    y1 = min(img.height, int(ys.max()) + 1 + bleed)
+    return img.crop((x0, y0, x1, y1)), (x0, y0)
+
+
+def _shelf_pack(sizes, order, width, max_h, spacing):
+    """선반(shelf) 패킹. 반환: (배치 {i: (x, y)}, 사용 높이, 못 넣은 항목)."""
+    placed, left = {}, []
+    x = y = shelf_h = 0
+    for i in order:
+        w, h = sizes[i]
+        if x > 0 and x + w > width:              # 새 선반
+            y, x, shelf_h = y + shelf_h + spacing, 0, 0
+        if w > width or y + h > max_h:
+            left.append(i)
+            continue
+        placed[i] = (x, y)
+        x += w + spacing
+        shelf_h = max(shelf_h, h)
+    return placed, y + shelf_h, left
+
+
+def pack_pages(images: list[Image.Image], spacing: int, max_size: int):
+    """크기가 제각각인 이미지를 max_size 이하 페이지(여러 장 가능)에 빽빽하게 배치.
+
+    반환: (페이지 이미지 목록, 각 이미지의 {"page", "x", "y", "w", "h"} — y 는 Unity 좌표(좌하단 원점))
+    """
+    sizes = [im.size for im in images]
+    for i, (w, h) in enumerate(sizes):
+        if w > max_size or h > max_size:
+            raise ValueError(f"프레임 {i} 크기 {w}x{h} 가 max_texture {max_size} 보다 큼 — height 를 낮추세요")
+    remaining = sorted(range(len(images)), key=lambda i: (-sizes[i][1], -sizes[i][0]))
+    pages, rects = [], [None] * len(images)
+    while remaining:
+        maxw = max(sizes[i][0] for i in remaining)
+        # 폭 후보 중 한 장에 다 들어가면서 면적이 가장 작은 폭을 고른다. 안 되면 최대 폭으로 채운다.
+        best = None
+        for k in range(24):
+            width = min(max_size, maxw + (max_size - maxw) * k // 23)
+            placed, used_h, left = _shelf_pack(sizes, remaining, width, max_size, spacing)
+            if not left:
+                area = width * used_h
+                if best is None or area < best[0]:
+                    best = (area, width, placed, used_h, left)
+        if best is None:
+            placed, used_h, left = _shelf_pack(sizes, remaining, max_size, max_size, spacing)
+            best = (0, max_size, placed, used_h, left)
+        _, width, placed, used_h, left = best
+        used_w = max(x + sizes[i][0] for i, (x, _) in placed.items())
+        # 블록 압축(ASTC/ETC2) 호환을 위해 4의 배수
+        W, H = min(max_size, (used_w + 3) // 4 * 4), min(max_size, (used_h + 3) // 4 * 4)
+        page = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        for i, (x, y) in placed.items():
+            page.paste(images[i], (x, y))
+            w, h = sizes[i]
+            rects[i] = {"page": len(pages), "x": x, "y": H - y - h, "w": w, "h": h}
+        pages.append(page)
+        remaining = left
+    return pages, rects

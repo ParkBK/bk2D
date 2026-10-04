@@ -41,6 +41,29 @@ def _make_clip(tmp: Path, name: str, n: int, fn) -> Path:
     return out
 
 
+def _reconstruct(out: Path, meta_json: Path) -> list[np.ndarray]:
+    """JSON 의 페이지/rect/trim 오프셋으로 트리밍 전 공통 셀 프레임을 복원한다."""
+    meta = json.loads(meta_json.read_text())
+    pages = [np.asarray(Image.open(out / im).convert("RGBA")) for im in meta.get("images", [meta["image"]])]
+    cw, chh = meta["cell"]["w"], meta["cell"]["h"]
+    cells = []
+    for f in meta["frames"]:
+        pg = pages[f.get("page", 0)]
+        H = pg.shape[0]
+        top = H - f["y"] - f["h"]
+        piece = pg[top:top + f["h"], f["x"]:f["x"] + f["w"]]
+        t = f.get("trim", {"x": 0, "y": 0, "w": f["w"], "h": f["h"]})
+        cell = np.zeros((chh, cw, 4), dtype=np.uint8)
+        ctop = chh - t["y"] - t["h"]
+        cell[ctop:ctop + t["h"], t["x"]:t["x"] + t["w"]] = piece
+        # 피벗이 공통 셀 피벗과 같은 점을 가리키는지
+        px = t["x"] + f["pivot"]["x"] * t["w"]
+        py = t["y"] + f["pivot"]["y"] * t["h"]
+        assert abs(px - meta["pivot"]["x"] * cw) < 0.01 and abs(py - meta["pivot"]["y"] * chh) < 0.01
+        cells.append(cell)
+    return cells
+
+
 @pytest.fixture(scope="module")
 def built(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("bk2d")
@@ -80,7 +103,7 @@ def test_loop_detected(built):
 
 def test_transparency_and_no_green(built):
     out, _ = built
-    a = np.asarray(Image.open(out / "hero_idle.png").convert("RGBA")).astype(int)
+    a = np.stack(_reconstruct(out, out / "hero_idle.json")).astype(int)
     alpha = a[..., 3]
     assert (alpha == 0).mean() > 0.3
     opaque = a[alpha > 200]
@@ -215,15 +238,10 @@ def test_profiles_build_two_variants(tmp_path):
 
 
 def _feet_positions(out_png: Path, meta_json: Path):
-    """각 셀에서 캐릭터 하단 중앙(발) 위치."""
-    meta = json.loads(meta_json.read_text())
-    atlas = np.asarray(Image.open(out_png).convert("RGBA"))
-    H = atlas.shape[0]
+    """각 프레임(공통 셀로 복원)에서 캐릭터 하단 중앙(발) 위치."""
     pos = []
-    for f in meta["frames"]:
-        top = H - f["y"] - f["h"]
-        cell = atlas[top:top + f["h"], f["x"]:f["x"] + f["w"], 3] > 128
-        ys, xs = np.nonzero(cell)
+    for cell in _reconstruct(meta_json.parent, meta_json):
+        ys, xs = np.nonzero(cell[..., 3] > 128)
         bottom = ys.max()
         pos.append((xs[ys >= bottom - 3].mean(), bottom))
     return np.array(pos)
@@ -285,3 +303,93 @@ def test_build_into_unity_assets_keeps_previews_out(tmp_path):
     assert [c["name"] for c in battle["clips"]] == ["idle_1", "attack_1"] and "built" in battle
     assert not list(assets.rglob("*.gif")) and not list(assets.rglob("*.webp"))
     assert (work / "_preview" / "battle" / "hero_battle_attack_1.webp").exists()
+
+
+@pytest.fixture(scope="module")
+def idle_long(tmp_path_factory):
+    """5초(120프레임 @24fps), 2초 주기 숨쉬기 idle + 1.5초 attack."""
+    tmp = tmp_path_factory.mktemp("long")
+    size = (480, 360)
+    _make_clip(tmp, "idle", 120, lambda i: _draw_char(size, 240, 330, 1.0, bob=6 * math.sin(2 * math.pi * i / 48)))
+    _make_clip(tmp, "attack", 36, lambda i: _draw_char(size, 240, 330, 1.0, arm=math.sin(math.pi * i / 35)))
+    return tmp
+
+
+def _build_cfg(tmp, out_name, **cfg):
+    base = {"name": "x", "default": "idle", "height": 200,
+            "clips": [{"name": "idle", "src": "idle.mp4", "loop": True}, {"name": "attack", "src": "attack.mp4"}]}
+    base.update(cfg)
+    (tmp / f"{out_name}.json").write_text(json.dumps(base))
+    rep = build(CharacterSpec.load(tmp / f"{out_name}.json"), tmp / out_name, previews=False, log=lambda *_: None)
+    return {c["clip"]: c for c in rep["clips"]}
+
+
+def test_loop_seconds_max_caps_loop_length(idle_long):
+    clips = _build_cfg(idle_long, "cap", fps=8, loop_seconds=[1.0, 1.5])
+    assert clips["idle"]["frames"] <= 12            # 1.5초 * 8fps
+    clips = _build_cfg(idle_long, "cap2", fps=8, loop_seconds=[3.0, 4.0])  # 범위 안에 좋은 루프 없어도 상한 지킴
+    assert clips["idle"]["frames"] <= 32
+
+
+def test_max_frames(idle_long):
+    clips = _build_cfg(idle_long, "mf", fps=12, loop_seconds=[1.0, 2.5], max_frames=10)
+    assert clips["idle"]["frames"] <= 10
+    a = clips["attack"]
+    assert a["frames"] == 10
+    assert abs(a["frames"] / a["fps"] - 1.5) < 0.05   # 1회 재생은 길이 유지, fps 를 낮춤
+    assert a["qa"]["endToBase"] < 0.04                # 마지막(기준 포즈 복귀) 프레임 보존
+
+
+def test_pingpong_halves_frames(idle_long):
+    pp = _build_cfg(idle_long, "pp1", fps=12, loop_seconds=[1.5, 2.5], pingpong=True)
+    assert pp["idle"]["playback"] == "pingpong"
+    meta = json.loads((idle_long / "pp1" / "x_idle.json").read_text())
+    n = len(meta["frames"])
+    assert meta["sequence"] == list(range(n)) + list(range(n - 2, 0, -1))
+    assert n == len(meta["sequence"]) // 2 + 1         # 저장 = 재생의 절반 + 1
+    assert len(meta["sequence"]) <= 30                 # 재생 길이도 loop_seconds 상한(2.5초*12) 이하
+    capped = _build_cfg(idle_long, "pp2", fps=12, loop_seconds=[1.5, 2.5], pingpong=True, max_frames=8)
+    assert capped["idle"]["frames"] <= 8
+    assert pp["attack"]["playback"] == "once"          # 1회 클립은 핑퐁 대상 아님
+
+
+def test_multi_page_and_trim(idle_long):
+    clips = _build_cfg(idle_long, "pg", fps=12, max_texture=256, height=120)
+    out = idle_long / "pg"
+    meta = json.loads((out / "x_idle.json").read_text())
+    assert len(meta["images"]) > 1
+    for im in meta["images"]:
+        w, h = Image.open(out / im).size
+        assert w <= 256 and h <= 256 and w % 4 == 0 and h % 4 == 0
+    cells = _reconstruct(out, out / "x_idle.json")          # 페이지/트리밍/피벗 복원 검증 포함
+    assert all(c.shape[:2] == (meta["cell"]["h"], meta["cell"]["w"]) for c in cells)
+    assert any(f["w"] < meta["cell"]["w"] for f in meta["frames"])   # 실제로 잘렸는지
+
+
+def test_ui_target_is_not_trimmed_and_meta_written(idle_long):
+    cfg = {"target": "ui", "unity": {"format": "ASTC_8x8", "max_texture_size": 1024}}
+    raw = {"name": "x", "default": "idle", "height": 200, **cfg,
+           "clips": [{"name": "idle", "src": "idle.mp4", "loop": True,
+                      "meta": {"service": "Higgsfield", "seed": "1234", "prompt": "breathing", "reference": "base.png"}}]}
+    (idle_long / "ui.json").write_text(json.dumps(raw))
+    build(CharacterSpec.load(idle_long / "ui.json"), idle_long / "ui", previews=False, log=lambda *_: None)
+    meta = json.loads((idle_long / "ui" / "x_idle.json").read_text())
+    assert all(f["w"] == meta["cell"]["w"] and f["h"] == meta["cell"]["h"] for f in meta["frames"])
+    assert meta["meta"]["service"] == "Higgsfield" and meta["meta"]["seed"] == "1234"
+    assert meta["meta"]["tool"].startswith("bk2d ") and len(meta["meta"]["sourceSha1"]) == 40
+    man = json.loads((idle_long / "ui" / "x.character.json").read_text())
+    assert man["unity"] == {"maxTextureSize": 1024, "format": "ASTC_8x8", "platforms": ["Android", "iPhone"]}
+
+
+def test_stats_command(idle_long, capsys):
+    from bk2d.cli import main
+    _build_cfg(idle_long, "st", fps=8)
+    assert main(["stats", str(idle_long / "st")]) == 0
+    out = capsys.readouterr().out
+    assert "ASTC6x6" in out and "idle" in out and "합계" in out
+
+
+def test_once_clip_keeps_last_frame(idle_long):
+    """fps 를 낮춰도 1회 클립의 마지막(기준 포즈 복귀) 프레임이 빠지면 안 된다 (이전 버전 버그)."""
+    clips = _build_cfg(idle_long, "last", fps=8)
+    assert clips["attack"]["qa"]["endToBase"] < 0.04

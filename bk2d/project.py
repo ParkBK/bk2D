@@ -15,9 +15,13 @@ def is_video(p: Path) -> bool:
     return p.suffix.lower() == ".mp4" and not p.name.startswith("_")
 
 
+META_TEMPLATE = {"service": "", "model": "", "seed": "", "prompt": "", "reference": ""}
+
+
 def clip_entry(filename: str) -> dict:
     stem = Path(filename).stem
-    return {"name": stem, "src": filename, "loop": any(w in stem.lower() for w in LOOP_WORDS)}
+    return {"name": stem, "src": filename, "loop": any(w in stem.lower() for w in LOOP_WORDS),
+            "meta": dict(META_TEMPLATE)}
 
 
 def find_config(folder: Path) -> Path | None:

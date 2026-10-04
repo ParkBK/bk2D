@@ -33,6 +33,27 @@ def find_loop_end(thumbs: list[np.ndarray], lo: int | None = None,
     return j, score
 
 
+def find_pingpong_turn(thumbs: list[np.ndarray], lo: int, hi: int) -> tuple[int, float]:
+    """핑퐁 반환점: lo..hi 중 프레임 0 과 가장 다른(동작의 끝점) 프레임.
+
+    0 -> turn -> 0 으로 왕복 재생할 때 방향이 바뀌는 지점이 동작의 극점이어야 덜 어색하다.
+    """
+    n = len(thumbs)
+    hi = min(hi, n - 1)
+    lo = max(1, min(lo, hi))
+    score, j = max((frame_diff(thumbs[j], thumbs[0]), j) for j in range(lo, hi + 1))
+    return j, score
+
+
+def spaced_inclusive(count: int, n: int) -> list[int]:
+    """0..count-1 에서 양 끝을 포함해 n 개를 균등 선택 (핑퐁 반환점 보존용)."""
+    if n >= count:
+        return list(range(count))
+    if n <= 1:
+        return [0]
+    return [round(i * (count - 1) / (n - 1)) for i in range(n)]
+
+
 def resample_indices(count: int, src_fps: float, dst_fps: float) -> list[int]:
     """count 프레임(src_fps)을 dst_fps 로 균등 샘플링한 인덱스."""
     if dst_fps >= src_fps:

@@ -11,23 +11,31 @@ import time
 import traceback
 from pathlib import Path
 
-from . import project
+from . import project, report
 from .pipeline import CharacterSpec, build
 from .timing import grade
 
 
 def _print_report(rep: dict):
     print()
-    print(f"{'clip':<12}{'frames':>7}{'fps':>6}  {'atlas':<11}{'start→base':>12}{'end→base':>11}{'loop':>9}")
+    print(f"{'clip':<12}{'frames':>7}{'fps':>6}  {'pages':<22}{'start→base':>12}{'end→base':>11}{'loop':>9}")
     for c in rep["clips"]:
         q = c["qa"]
-        loop = f"{q['loopSeam']:.3f}" if "loopSeam" in q else "-"
-        print(f"{c['clip']:<12}{c['frames']:>7}{c['fps']:>6g}  {'x'.join(map(str, c['atlas'])):<11}"
+        loop = "pingpong" if c.get("playback") == "pingpong" else (
+            f"{q['loopSeam']:.3f}" if "loopSeam" in q else "-")
+        pages = ", ".join(f"{w}x{h}" for w, h in c["pages"])
+        print(f"{c['clip']:<12}{c['frames']:>7}{c['fps']:>6g}  {pages:<22}"
               f"{q['startToBase']:>8.3f} {grade(q['startToBase']):<3}"
               f"{q['endToBase']:>7.3f} {grade(q['endToBase']):<3}{loop:>9}")
         for n in c["notes"]:
             print(f"    - {n}")
     print("\nstart/end→base: 기준 포즈(default 클립 첫 프레임)와의 차이. '튐'이면 Unity 전환 시 포즈가 끊깁니다.")
+
+
+def _print_cost(name: str, rep: dict):
+    rows = [{"character": name, "clip": c["clip"], "frames": c["frames"], **c["cost"]} for c in rep["clips"]]
+    print()
+    print(report.format_rows(rows, f"[용량] {name}"))
 
 
 def _init(folder: Path, name: str):
@@ -48,9 +56,13 @@ def _init(folder: Path, name: str):
         "erase": [[0.62, 0.90, 1.0, 1.0]],
         "despeckle": 64,
         "loop_seconds": [1.0, 2.5],
+        "max_frames": 16,
+        "pingpong": False,
+        "max_texture": 2048,
+        "unity": {"format": "ASTC_6x6", "platforms": ["Android", "iPhone"]},
         "profiles": {
             "battle": {"height": 512},
-            "lobby": {"height": 1024, "only": [default], "target": "ui"},
+            "lobby": {"height": 768, "only": [default], "target": "ui"},
         },
         "clips": clips,
     }
@@ -87,7 +99,13 @@ def _build_all(cfg_path: Path, out: Path, only_profile: str | None, previews: bo
         print(f"\n=== {spec.name} (height {spec.height}, {spec.target}) -> {dst}")
         rep = build(spec, dst, previews=previews, preview_dir=_preview_dir(cfg_path, out, prof))
         _print_report(rep)
+        _print_cost(spec.name, rep)
         reports[prof or spec.name] = rep
+    if len(reports) > 1:
+        rows = [{"character": r["name"], "clip": c["clip"], "frames": c["frames"], **c["cost"]}
+                for r in reports.values() for c in r["clips"]]
+        print()
+        print(report.format_rows(rows, "[용량] 프로필 전체"))
     return reports
 
 
@@ -155,7 +173,16 @@ def main(argv=None):
     w.add_argument("--no-preview", action="store_true")
     w.add_argument("--name", default="hero", help="설정 파일이 없을 때 만들 캐릭터 이름")
 
+    st = sub.add_parser("stats", help="출력 폴더(들)의 프레임 수/아틀라스/용량/메모리 비교")
+    st.add_argument("folders", type=Path, nargs="+")
+
     args = ap.parse_args(argv)
+
+    if args.cmd == "stats":
+        for f in args.folders:
+            print(report.format_rows(report.scan(f), f"== {f}"))
+            print()
+        return 0
 
     if args.cmd == "init":
         return _init(args.folder, args.name)

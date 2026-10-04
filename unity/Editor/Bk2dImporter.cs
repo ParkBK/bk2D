@@ -2,6 +2,7 @@
 // 필요 패키지: 2D Sprite (com.unity.2d.sprite). 2D 템플릿엔 기본 포함, 3D 템플릿엔 없음.
 // CS0234 'Sprites' 에러가 나면: Window > Package Manager > Unity Registry > 2D Sprite 설치
 // 사용: 출력 폴더를 Assets 아래로 복사 -> *.character.json 선택 -> 우클릭 > bk2D > Import Character
+// 컴파일 검사: unity/ci/compile_check.sh (실제 UnityEngine/UnityEditor 참조 DLL + 2D Sprite 패키지 스텁)
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -14,24 +15,43 @@ namespace Bk2d.Editor
 {
     public static class Bk2dImporter
     {
-        [System.Serializable] class FrameJson { public string name; public int x, y, w, h; }
+#pragma warning disable 0649 // JsonUtility 가 채우는 필드
         [System.Serializable] class Vec2Json { public float x, y; }
+        [System.Serializable] class SizeJson { public int w, h; }
+        [System.Serializable] class FrameJson
+        {
+            public string name;
+            public int page, x, y, w, h;   // page: 아틀라스 페이지 번호, x/y: 좌하단 원점
+            public Vec2Json pivot;         // v2: 프레임별 피벗 (트리밍돼도 발밑을 가리킴)
+        }
         [System.Serializable] class ClipJson
         {
-            public string character, clip, image;
+            public int version;
+            public string character, clip, image, playback;
+            public string[] images;        // v2: 여러 페이지
+            public SizeJson[] pageSizes;   // v2: 페이지 크기
             public float fps;
             public bool loop;
             public int pixelsPerUnit;
             public Vec2Json pivot;
             public FrameJson[] frames;
+            public int[] sequence;         // v2: 재생 순서 (핑퐁)
         }
         [System.Serializable] class ClipRefJson { public string name, json; public bool loop; }
+        [System.Serializable] class UnityJson
+        {
+            public int maxTextureSize;
+            public string format;          // 예: ASTC_6x6, ASTC_8x8
+            public string[] platforms;     // 예: Android, iPhone
+        }
         [System.Serializable] class CharacterJson
         {
             public string name, @default, target;  // target: "sprite"(기본) | "ui"
             public int pixelsPerUnit;
+            public UnityJson unity;
             public ClipRefJson[] clips;
         }
+#pragma warning restore 0649
 
         const string Menu = "Assets/bk2D/Import Character";
 
@@ -58,7 +78,7 @@ namespace Bk2d.Editor
             foreach (var cref in ch.clips)
             {
                 var c = JsonUtility.FromJson<ClipJson>(File.ReadAllText($"{dir}/{cref.json}"));
-                var sprites = ImportSheet(dir, c);
+                var sprites = ImportSheet(dir, c, ch.unity);
                 clips[c.clip] = (WriteAnimationClip(dir, c, sprites, ch.target == "ui"), c.loop);
             }
 
@@ -72,9 +92,24 @@ namespace Bk2d.Editor
             Debug.Log($"[bk2D] {ch.name}: 클립 {clips.Count}개 가져옴");
         }
 
-        static List<Sprite> ImportSheet(string dir, ClipJson c)
+        static List<Sprite> ImportSheet(string dir, ClipJson c, UnityJson unity)
         {
-            var texPath = $"{dir}/{c.image}";
+            var images = c.images != null && c.images.Length > 0 ? c.images : new[] { c.image };
+            var byName = new Dictionary<string, Sprite>();
+            for (int page = 0; page < images.Length; page++)
+            {
+                var texPath = $"{dir}/{images[page]}";
+                var frames = c.frames.Where(f => f.page == page).ToArray();
+                var size = c.pageSizes != null && page < c.pageSizes.Length ? c.pageSizes[page] : null;
+                ImportPage(texPath, c, frames, unity, size);
+                foreach (var s in AssetDatabase.LoadAllAssetsAtPath(texPath).OfType<Sprite>())
+                    byName[s.name] = s;
+            }
+            return c.frames.Select(f => byName[f.name]).ToList();
+        }
+
+        static void ImportPage(string texPath, ClipJson c, FrameJson[] frames, UnityJson unity, SizeJson size)
+        {
             AssetDatabase.ImportAsset(texPath, ImportAssetOptions.ForceSynchronousImport);
             var ti = (TextureImporter)AssetImporter.GetAtPath(texPath);
 
@@ -86,8 +121,7 @@ namespace Bk2d.Editor
             ti.filterMode = FilterMode.Bilinear;
             // 일러스트 계열은 기본 압축에서 밴딩/블록 노이즈가 두드러진다.
             ti.textureCompression = TextureImporterCompression.CompressedHQ;
-            ti.GetSourceTextureWidthAndHeight(out var tw, out var th);
-            ti.maxTextureSize = Mathf.Min(8192, Mathf.NextPowerOfTwo(Mathf.Max(tw, th)));
+            ApplyTextureSettings(ti, unity, size);
 
             var factory = new SpriteDataProviderFactories();
             factory.Init();
@@ -96,26 +130,62 @@ namespace Bk2d.Editor
 
             // 재임포트 시 기존 spriteID 를 유지해야 씬/프리팹의 참조가 끊기지 않는다.
             var existing = dp.GetSpriteRects().ToDictionary(r => r.name, r => r.spriteID);
-            var pivot = new Vector2(c.pivot.x, c.pivot.y);
-            var rects = c.frames.Select(f => new SpriteRect
+            var common = new Vector2(c.pivot.x, c.pivot.y);
+            var rects = frames.Select(f => new SpriteRect
             {
                 name = f.name,
                 rect = new Rect(f.x, f.y, f.w, f.h),
                 alignment = SpriteAlignment.Custom,
-                pivot = pivot,
+                // v2 는 프레임마다 잘린 크기가 달라 피벗도 프레임별. 모두 같은 발밑 지점을 가리킨다.
+                pivot = c.version >= 2 && f.pivot != null ? new Vector2(f.pivot.x, f.pivot.y) : common,
                 spriteID = existing.TryGetValue(f.name, out var id) ? id : GUID.Generate(),
             }).ToArray();
             dp.SetSpriteRects(rects);
 #if UNITY_2021_2_OR_NEWER
             var nameIds = dp.GetDataProvider<ISpriteNameFileIdDataProvider>();
-            nameIds?.SetNameFileIdPairs(rects.Select(r => new SpriteNameFileIdPair(r.name, r.spriteID)));
+            if (nameIds != null)
+                nameIds.SetNameFileIdPairs(rects.Select(r => new SpriteNameFileIdPair(r.name, r.spriteID)));
 #endif
             dp.Apply();
             ti.SaveAndReimport();
+        }
 
-            var byName = AssetDatabase.LoadAllAssetsAtPath(texPath).OfType<Sprite>()
-                .ToDictionary(s => s.name);
-            return c.frames.Select(f => byName[f.name]).ToList();
+        // 프로필별 텍스처 설정: 기본 플랫폼 maxTextureSize + 모바일 플랫폼 ASTC 오버라이드.
+        static void ApplyTextureSettings(TextureImporter ti, UnityJson unity, SizeJson size)
+        {
+            int largest = size != null ? Mathf.Max(size.w, size.h) : 2048;
+            int max = unity != null && unity.maxTextureSize > 0
+                ? unity.maxTextureSize
+                : Mathf.Min(8192, Mathf.NextPowerOfTwo(largest));
+            if (largest > max)
+                Debug.LogWarning($"[bk2D] {ti.assetPath}: 페이지 {largest}px > maxTextureSize {max} — Unity 가 축소합니다(흐려짐).");
+            ti.maxTextureSize = max;
+
+            if (unity == null || string.IsNullOrEmpty(unity.format)) return;
+            if (!TryParseFormat(unity.format, out var format))
+            {
+                Debug.LogWarning($"[bk2D] 알 수 없는 텍스처 포맷 '{unity.format}' — 플랫폼 오버라이드 생략");
+                return;
+            }
+            var platforms = unity.platforms != null && unity.platforms.Length > 0
+                ? unity.platforms : new[] { "Android", "iPhone" };
+            foreach (var platform in platforms)
+            {
+                var ps = ti.GetPlatformTextureSettings(platform);
+                ps.overridden = true;
+                ps.maxTextureSize = max;
+                ps.format = format;
+                ti.SetPlatformTextureSettings(ps);
+            }
+        }
+
+        // Unity 2019+ 는 ASTC_6x6, 2018 은 ASTC_RGBA_6x6. 이름으로 찾아 버전 차이를 흡수한다.
+        static bool TryParseFormat(string name, out TextureImporterFormat format)
+        {
+            if (System.Enum.TryParse(name, out format)) return true;
+            if (name.StartsWith("ASTC_") && System.Enum.TryParse("ASTC_RGBA_" + name.Substring(5), out format))
+                return true;
+            return false;
         }
 
         // UI Image 는 com.unity.ugui 패키지 타입이라 컴파일 의존을 피하려고 이름으로 찾는다.
@@ -127,11 +197,18 @@ namespace Bk2d.Editor
         {
             var clip = new AnimationClip { frameRate = c.fps };
             var binding = EditorCurveBinding.PPtrCurve("", ui ? UIImageType() : typeof(SpriteRenderer), "m_Sprite");
-            var keys = new ObjectReferenceKeyframe[sprites.Count + 1];
-            for (int i = 0; i < sprites.Count; i++)
-                keys[i] = new ObjectReferenceKeyframe { time = i / c.fps, value = sprites[i] };
+            // 핑퐁 등 재생 순서가 있으면 그 순서대로 키를 만든다 (같은 스프라이트 재사용).
+            var order = c.sequence != null && c.sequence.Length > 0
+                ? c.sequence : Enumerable.Range(0, sprites.Count).ToArray();
+            var keys = new ObjectReferenceKeyframe[order.Length + 1];
+            for (int i = 0; i < order.Length; i++)
+                keys[i] = new ObjectReferenceKeyframe { time = i / c.fps, value = sprites[order[i]] };
             // 마지막 프레임도 1프레임 길이만큼 보이도록 끝 키를 하나 더 둔다.
-            keys[sprites.Count] = new ObjectReferenceKeyframe { time = sprites.Count / c.fps, value = sprites[sprites.Count - 1] };
+            keys[order.Length] = new ObjectReferenceKeyframe
+            {
+                time = order.Length / c.fps,
+                value = sprites[order[order.Length - 1]],
+            };
             AnimationUtility.SetObjectReferenceCurve(clip, binding, keys);
 
             var settings = AnimationUtility.GetAnimationClipSettings(clip);
