@@ -316,8 +316,10 @@ def idle_long(tmp_path_factory):
 
 
 def _build_cfg(tmp, out_name, **cfg):
-    base = {"name": "x", "default": "idle", "height": 200,
-            "clips": [{"name": "idle", "src": "idle.mp4", "loop": True}, {"name": "attack", "src": "attack.mp4"}]}
+    clips = [{"name": "idle", "src": "idle.mp4", "loop": True}]
+    if (tmp / "attack.mp4").exists():
+        clips.append({"name": "attack", "src": "attack.mp4"})
+    base = {"name": "x", "default": "idle", "height": 200, "clips": clips}
     base.update(cfg)
     (tmp / f"{out_name}.json").write_text(json.dumps(base))
     rep = build(CharacterSpec.load(tmp / f"{out_name}.json"), tmp / out_name, previews=False, log=lambda *_: None)
@@ -393,3 +395,24 @@ def test_once_clip_keeps_last_frame(idle_long):
     """fps 를 낮춰도 1회 클립의 마지막(기준 포즈 복귀) 프레임이 빠지면 안 된다 (이전 버전 버그)."""
     clips = _build_cfg(idle_long, "last", fps=8)
     assert clips["attack"]["qa"]["endToBase"] < 0.04
+
+
+def test_loop_crossfade_smooths_forced_short_loop(tmp_path):
+    """자연 주기(2초)보다 짧게(1.3초) 자르면 팔이 뻗은 상태에서 처음으로 점프한다. 크로스페이드가 이를 없애야 한다."""
+    size = (480, 360)
+    tri = lambda i: 1 - abs((i % 48) / 24 - 1)       # 0 -> 1 -> 0, 48프레임(2초) 주기
+    _make_clip(tmp_path, "idle", 96, lambda i: _draw_char(size, 240, 330, 1.0, arm=tri(i)))
+    plain = _build_cfg(tmp_path, "xf0", fps=12, loop_seconds=[1.0, 1.3])
+    xf = _build_cfg(tmp_path, "xf1", fps=12, loop_seconds=[1.0, 1.3], loop_crossfade=3)
+    assert xf["idle"]["frames"] == plain["idle"]["frames"]     # 프레임 수는 그대로
+    assert xf["idle"]["qa"]["loopSeam"] < plain["idle"]["qa"]["loopSeam"] * 0.5
+
+
+def test_profile_timing_mismatch_warns(idle_long, capsys):
+    from bk2d.cli import main
+    cfg = {"name": "x", "default": "idle", "fps": 8, "loop_seconds": [1.5, 2.5], "pingpong": True,
+           "profiles": {"battle": {"height": 150}, "lobby": {"height": 200, "max_frames": 4}},
+           "clips": [{"name": "idle", "src": "idle.mp4", "loop": True}]}
+    (idle_long / "tm.json").write_text(json.dumps(cfg))
+    assert main(["build", str(idle_long / "tm.json"), "-o", str(idle_long / "tm"), "--no-preview", "--no-sync"]) == 0
+    assert "동작 타이밍이 프로필마다 다릅니다" in capsys.readouterr().out

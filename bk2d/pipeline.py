@@ -23,6 +23,7 @@ class ClipSpec:
     stabilize: str | None = None      # feet | body | none. None 이면 루프 클립은 feet, 나머지는 none
     max_frames: int | None = None     # 저장 프레임 수 상한
     pingpong: bool = False            # 루프를 정방향+역방향 재생으로 (저장 프레임 약 절반)
+    loop_crossfade: int = 0           # 루프 시작 n 프레임에 루프 끝 다음(원본 영상의 이어지는) 프레임을 섞어 이음매 제거
     meta: dict = field(default_factory=dict)  # 생성 메타데이터(서비스, 시드, 프롬프트, 레퍼런스 등) 수동 입력
 
 
@@ -80,6 +81,7 @@ class CharacterSpec:
                           stabilize=c.get("stabilize", raw.get("stabilize")),
                           max_frames=c.get("max_frames", raw.get("max_frames")),
                           pingpong=bool(c.get("pingpong", raw.get("pingpong", False))),
+                          loop_crossfade=int(c.get("loop_crossfade", raw.get("loop_crossfade", 0))),
                           meta=dict(c.get("meta", {})))
                  for c in raw["clips"]]
         key = raw.get("key", {})
@@ -134,6 +136,7 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log,
     n_src = len(paths)
     max_frames = spec.max_frames
     sequence = None
+    n_extra = 0
     diag = {"srcFrames": n_src, "srcFps": round(src_fps, 3), "fps": out_fps, "maxFrames": max_frames}
 
     if spec.loop:
@@ -174,12 +177,17 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log,
                 end, loop_score = timing.find_loop_end(thumbs)
             if end < n_src:
                 notes.append(f"루프 구간 {end}/{n_src} 프레임 ({end / src_fps:.2f}초)으로 자름")
-            paths = paths[:end]
-            idx = timing.resample_indices(len(paths), src_fps, dst_fps)
-            paths = [paths[i] for i in idx]
-            if cap_out and len(paths) > cap_out:  # 안전장치: 어떤 경우에도 상한 초과 금지
-                paths = [paths[i] for i in timing.resample_indices(len(paths), len(paths), cap_out)]
-            diag.update(loopEndSrc=end)
+            all_paths = paths
+            src_idx = timing.resample_indices(end, src_fps, dst_fps)
+            if cap_out and len(src_idx) > cap_out:  # 안전장치: 어떤 경우에도 상한 초과 금지
+                src_idx = [src_idx[i] for i in timing.resample_indices(len(src_idx), len(src_idx), cap_out)]
+            paths = [all_paths[i] for i in src_idx]
+            # 크로스페이드용: 루프 끝 다음에 실제 영상에서 이어지는 프레임 (end + i 는 프레임 i 의 "다음 바퀴")
+            extra = [all_paths[end + i] for i in src_idx[:max(0, min(spec.loop_crossfade, len(src_idx) - 1))]
+                     if end + i < n_src]
+            n_extra = len(extra)
+            paths = paths + extra
+            diag.update(loopEndSrc=end, crossfade=n_extra)
     else:
         # 1회 재생은 마지막 프레임(기준 포즈 복귀)이 반드시 포함돼야 한다. 양 끝 포함 균등 샘플링.
         n_out = max(1, round((n_src - 1) * out_fps / src_fps) + 1)
@@ -232,6 +240,15 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log,
         drift = max(max(abs(dx), abs(dy)) for dx, dy in shifts)
         if drift > 0:
             notes.append(f"흔들림 보정({mode}): 최대 {drift}px 이동 되돌림 (원본 해상도 기준)")
+
+    if n_extra:
+        # 시작 프레임들을 "끝 다음 프레임" 쪽에서 원래 프레임 쪽으로 서서히 섞는다.
+        # 마지막 프레임 -> 0번 프레임 전환이 실제 영상의 연속 동작이 되어 튀지 않는다.
+        body, tail = frames[:-n_extra], frames[-n_extra:]
+        for j, nxt in enumerate(tail):
+            body[j] = matte.blend(nxt, body[j], (j + 1) / (n_extra + 1))
+        frames = body
+        notes.append(f"루프 크로스페이드: 시작 {n_extra}프레임을 이어지는 동작과 섞음")
 
     if target_height is None:  # "source": 이 클립(기준 클립)의 원본 크기를 그대로 쓴다
         box = layout.alpha_bbox(frames[0])

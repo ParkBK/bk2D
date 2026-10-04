@@ -81,6 +81,23 @@ def _preview_dir(cfg_path: Path, out: Path, prof: str | None) -> Path | None:
     return None
 
 
+TIMING_KEYS = ("loopEndSrc", "pingpongTurnSrc", "crossfade")
+
+
+def _check_profile_timing(reports: dict):
+    """같은 클립인데 프로필마다 루프 구간/반환점이 다르면 동작 자체가 달라 보인다 -> 경고."""
+    seen = {}
+    for prof, rep in reports.items():
+        for c in rep["clips"]:
+            key = tuple(c.get("applied", {}).get(k) for k in TIMING_KEYS)
+            seen.setdefault(c["clip"], {})[prof] = key
+    for clip, by_prof in seen.items():
+        if len(set(by_prof.values())) > 1:
+            detail = ", ".join(f"{p}: 루프끝 {v[0]} / 반환점 {v[1]}" for p, v in by_prof.items())
+            print(f"\n[경고] '{clip}' 의 동작 타이밍이 프로필마다 다릅니다 ({detail}) — "
+                  f"같은 그림인데 움직임이 달라 보입니다. 프로필별 max_frames/loop_seconds/pingpong 을 맞추세요.")
+
+
 def _build_all(cfg_path: Path, out: Path, only_profile: str | None, previews: bool, sync: bool):
     if sync:
         added, removed = project.sync_clips(cfg_path)
@@ -101,6 +118,7 @@ def _build_all(cfg_path: Path, out: Path, only_profile: str | None, previews: bo
         _print_report(rep)
         _print_cost(spec.name, rep)
         reports[prof or spec.name] = rep
+    _check_profile_timing(reports)
     if len(reports) > 1:
         rows = [{"character": r["name"], "clip": c["clip"], "frames": c["frames"], **c["cost"]}
                 for r in reports.values() for c in r["clips"]]

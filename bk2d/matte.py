@@ -158,3 +158,11 @@ def temporal_smooth_alpha(frames: list[np.ndarray], strength: float) -> list[np.
         g[..., 3] = np.clip(mixed + 0.5, 0, 255).astype(np.uint8)
         out.append(g)
     return out
+
+
+def blend(a: np.ndarray, b: np.ndarray, w: float) -> np.ndarray:
+    """RGBA 두 장을 (1-w)*a + w*b 로 섞는다. 프리멀티플라이드로 섞어야 외곽에 검은 테가 안 생긴다."""
+    fa, fb = a.astype(np.float32) / 255.0, b.astype(np.float32) / 255.0
+    alpha = (1 - w) * fa[..., 3:] + w * fb[..., 3:]
+    rgb = ((1 - w) * fa[..., :3] * fa[..., 3:] + w * fb[..., :3] * fb[..., 3:]) / np.maximum(alpha, 1e-6)
+    return np.clip(np.dstack([rgb, alpha]) * 255.0 + 0.5, 0, 255).astype(np.uint8)
