@@ -62,7 +62,9 @@ bad              12    12  968x876       0.001 OK   0.169 튐          -
 
 ## Unity
 
-1. `unity/Editor/Bk2dImporter.cs` 를 프로젝트의 `Assets/.../Editor/` 에 복사 (패키지 `com.unity.2d.sprite` 필요)
+0. **필수 패키지 설치**: Window > Package Manager > Unity Registry > `2D Sprite` 설치
+   (3D 템플릿 프로젝트에는 기본으로 없음. 없으면 `CS0234: 'Sprites' does not exist in the namespace 'UnityEditor.U2D'` 컴파일 에러)
+1. `unity/Editor/Bk2dImporter.cs` 를 프로젝트의 `Assets/.../Editor/` 에 복사
 2. `out/hero` 폴더를 `Assets/` 아래로 복사
 3. `hero.character.json` 우클릭 → **bk2D > Import Character**
 

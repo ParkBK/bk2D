@@ -1,5 +1,6 @@
 // bk2d 출력(*.character.json + 시트 PNG/JSON)을 Unity 스프라이트/애니메이션으로 가져온다.
-// 필요 패키지: com.unity.2d.sprite (2D 템플릿에 기본 포함)
+// 필요 패키지: 2D Sprite (com.unity.2d.sprite). 2D 템플릿엔 기본 포함, 3D 템플릿엔 없음.
+// CS0234 'Sprites' 에러가 나면: Window > Package Manager > Unity Registry > 2D Sprite 설치
 // 사용: 출력 폴더를 Assets 아래로 복사 -> *.character.json 선택 -> 우클릭 > bk2D > Import Character
 using System.Collections.Generic;
 using System.IO;
