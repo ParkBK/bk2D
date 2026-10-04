@@ -41,11 +41,15 @@ def _init(folder: Path, name: str):
         print(f"{folder} 에 mp4 가 없어 예시 항목(idle_1.mp4)으로 만듭니다. 영상을 넣고 이름을 맞추세요.")
     default = next((c["name"] for c in clips if "idle" in c["name"].lower()), clips[0]["name"])
     cfg = {
-        "name": name, "default": default, "fps": 10, "height": "source",
+        "name": name, "default": default, "fps": 10,
         "key": {"mode": "chroma", "color": "auto", "tolerance": "auto"},
         "erase": [[0.62, 0.90, 1.0, 1.0]],
         "despeckle": 64,
         "loop_seconds": [1.0, 2.5],
+        "profiles": {
+            "battle": {"height": 512},
+            "lobby": {"height": 1024, "only": [default], "target": "ui"},
+        },
         "clips": clips,
     }
     cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -64,6 +68,7 @@ def main(argv=None):
     b.add_argument("-o", "--out", type=Path, required=True)
     b.add_argument("--no-preview", action="store_true")
     b.add_argument("--report", type=Path, help="QA 리포트를 JSON 으로 저장")
+    b.add_argument("--profile", help="이 프로필만 빌드 (없으면 profiles 전체를 out/<프로필> 로)")
     i = sub.add_parser("init", help="폴더의 mp4 를 찾아 설정 파일을 자동 생성")
     i.add_argument("folder", type=Path)
     i.add_argument("--name", default="hero")
@@ -77,15 +82,21 @@ def main(argv=None):
             print(f"설정 파일이 없습니다: {args.config}\n"
                   f"먼저: python -m bk2d init {args.config.parent} --name {args.config.stem}")
             return 1
-        spec = CharacterSpec.load(args.config)
-        missing = [str(c.src) for c in spec.clips if not c.src.exists()]
-        if missing:
-            print("영상 파일이 없습니다:\n  " + "\n  ".join(missing))
-            return 1
-        rep = build(spec, args.out, previews=not args.no_preview)
-        _print_report(rep)
+        profiles = [args.profile] if args.profile else CharacterSpec.profiles(args.config) or [None]
+        reports = {}
+        for prof in profiles:
+            spec = CharacterSpec.load(args.config, prof)
+            missing = [str(c.src) for c in spec.clips if not c.src.exists()]
+            if missing:
+                print("영상 파일이 없습니다:\n  " + "\n  ".join(missing))
+                return 1
+            out = args.out / prof if prof else args.out
+            print(f"\n=== {spec.name} (height {spec.height}, {spec.target}) -> {out}")
+            rep = build(spec, out, previews=not args.no_preview)
+            _print_report(rep)
+            reports[prof or spec.name] = rep
         if args.report:
-            args.report.write_text(json.dumps(rep, indent=2, ensure_ascii=False), encoding="utf-8")
+            args.report.write_text(json.dumps(reports, indent=2, ensure_ascii=False), encoding="utf-8")
     return 0
 
 

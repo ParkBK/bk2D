@@ -188,3 +188,27 @@ def test_height_source_keeps_resolution(tmp_path):
     assert 200 <= rep["cell"][1] <= 215
     attack = next(c for c in rep["clips"] if c["clip"] == "attack")
     assert attack["qa"]["startToBase"] < 0.04
+
+
+def test_profiles_build_two_variants(tmp_path):
+    """profiles: battle(전체 클립, 작게) / lobby(idle 만, 크게, ui) 가 각자 폴더로 나온다."""
+    from bk2d.cli import main
+    size = (480, 360)
+    _make_clip(tmp_path, "idle", 12, lambda i: _draw_char(size, 240, 330, 1.0))
+    _make_clip(tmp_path, "attack", 12, lambda i: _draw_char(size, 240, 330, 1.0, arm=i / 11))
+    cfg = {"name": "hero", "default": "idle", "height": 100,
+           "profiles": {"battle": {"height": 100},
+                        "lobby": {"height": 300, "only": ["idle"], "target": "ui"}},
+           "clips": [{"name": "idle", "src": "idle.mp4", "loop": True}, {"name": "attack", "src": "attack.mp4"}]}
+    (tmp_path / "hero.json").write_text(json.dumps(cfg))
+    out = tmp_path / "out"
+    assert main(["build", str(tmp_path / "hero.json"), "-o", str(out), "--no-preview",
+                 "--report", str(tmp_path / "r.json")]) == 0
+    battle = json.loads((out / "battle" / "hero_battle.character.json").read_text())
+    lobby = json.loads((out / "lobby" / "hero_lobby.character.json").read_text())
+    assert [c["name"] for c in battle["clips"]] == ["idle", "attack"]
+    assert [c["name"] for c in lobby["clips"]] == ["idle"] and lobby["target"] == "ui"
+    rep = json.loads((tmp_path / "r.json").read_text())
+    # 원본 캐릭터 높이 200px -> lobby 300 은 확대 경고가 있어야 함
+    assert any("확대" in n for n in rep["lobby"]["clips"][0]["notes"])
+    assert not any("확대" in n for n in rep["battle"]["clips"][0]["notes"])

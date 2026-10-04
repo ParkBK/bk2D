@@ -28,7 +28,7 @@ namespace Bk2d.Editor
         [System.Serializable] class ClipRefJson { public string name, json; public bool loop; }
         [System.Serializable] class CharacterJson
         {
-            public string name, @default;
+            public string name, @default, target;  // target: "sprite"(기본) | "ui"
             public int pixelsPerUnit;
             public ClipRefJson[] clips;
         }
@@ -59,7 +59,7 @@ namespace Bk2d.Editor
             {
                 var c = JsonUtility.FromJson<ClipJson>(File.ReadAllText($"{dir}/{cref.json}"));
                 var sprites = ImportSheet(dir, c);
-                clips[c.clip] = (WriteAnimationClip(dir, c, sprites), c.loop);
+                clips[c.clip] = (WriteAnimationClip(dir, c, sprites, ch.target == "ui"), c.loop);
             }
 
             var controllerPath = $"{dir}/{ch.name}.controller";
@@ -118,10 +118,15 @@ namespace Bk2d.Editor
             return c.frames.Select(f => byName[f.name]).ToList();
         }
 
-        static AnimationClip WriteAnimationClip(string dir, ClipJson c, List<Sprite> sprites)
+        // UI Image 는 com.unity.ugui 패키지 타입이라 컴파일 의존을 피하려고 이름으로 찾는다.
+        static System.Type UIImageType() =>
+            System.Type.GetType("UnityEngine.UI.Image, UnityEngine.UI")
+            ?? throw new System.Exception("[bk2D] target=ui 는 uGUI(com.unity.ugui) 패키지가 필요합니다.");
+
+        static AnimationClip WriteAnimationClip(string dir, ClipJson c, List<Sprite> sprites, bool ui)
         {
             var clip = new AnimationClip { frameRate = c.fps };
-            var binding = EditorCurveBinding.PPtrCurve("", typeof(SpriteRenderer), "m_Sprite");
+            var binding = EditorCurveBinding.PPtrCurve("", ui ? UIImageType() : typeof(SpriteRenderer), "m_Sprite");
             var keys = new ObjectReferenceKeyframe[sprites.Count + 1];
             for (int i = 0; i < sprites.Count; i++)
                 keys[i] = new ObjectReferenceKeyframe { time = i / c.fps, value = sprites[i] };

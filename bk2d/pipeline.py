@@ -38,11 +38,27 @@ class CharacterSpec:
     spacing: int = 2
     max_atlas: int = 8192
     pixels_per_unit: int = 100
+    target: str = "sprite"            # sprite = SpriteRenderer, ui = UI Image (Canvas)
 
     @staticmethod
-    def load(path: Path) -> "CharacterSpec":
+    def profiles(path: Path) -> list[str]:
+        return list(json.loads(path.read_text(encoding="utf-8-sig")).get("profiles", {}))
+
+    @staticmethod
+    def load(path: Path, profile: str | None = None) -> "CharacterSpec":
         raw = json.loads(path.read_text(encoding="utf-8-sig"))  # 메모장 BOM 허용
         base = path.parent
+        if profile:
+            # 프로필 값이 상위 값을 덮어쓴다. "only" 로 클립을 고를 수 있다.
+            prof = dict(raw.get("profiles", {})[profile])
+            only = prof.pop("only", None)
+            raw = {**raw, **prof, "name": f"{raw['name']}_{profile}"}
+            if only:
+                raw["clips"] = [c for c in raw["clips"] if c["name"] in only]
+                if not raw["clips"]:
+                    raise ValueError(f"프로필 '{profile}' 의 only {only} 에 해당하는 클립이 없습니다.")
+                if raw.get("default") not in only:
+                    raw["default"] = raw["clips"][0]["name"]
         def loop_range(d):
             r = d.get("loop_seconds")
             return tuple(r) if r else None
@@ -64,6 +80,7 @@ class CharacterSpec:
             padding=raw.get("padding", 4), spacing=raw.get("spacing", 2),
             max_atlas=raw.get("max_atlas", 8192),
             pixels_per_unit=raw.get("pixels_per_unit", 100),
+            target=raw.get("target", "sprite"),
         )
 
 
@@ -148,6 +165,8 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log,
             raise RuntimeError("첫 프레임에서 캐릭터를 찾지 못했습니다. 키 색/허용치를 확인하세요.")
         target_height = box[3] - box[1]
     placement = layout.placement_from_base(frames[0], target_height)
+    if placement.scale > 1.05:
+        notes.append(f"경고: 원본보다 {placement.scale:.2f}배 확대됨 — 흐려짐. 더 높은 해상도(1080P)로 생성하거나 height 를 낮추세요")
     log(f"  [{spec.name}] {len(frames)} 프레임 @ {out_fps:g}fps")
     return ClipResult(spec, frames, placement, out_fps, loop_score, notes)
 
@@ -183,7 +202,7 @@ def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print) ->
     base_thumb = _qa_thumb(rendered[ch.default][0])
 
     manifest = {"version": 1, "name": ch.name, "default": ch.default,
-                "pixelsPerUnit": ch.pixels_per_unit, "clips": []}
+                "pixelsPerUnit": ch.pixels_per_unit, "target": ch.target, "clips": []}
     report = []
     for r in results:
         name = r.spec.name
