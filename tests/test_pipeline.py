@@ -173,3 +173,18 @@ def test_alpha_floor_removes_faint_haze():
     out = matte.alpha_floor(rgba, 16)
     assert (out[3:6, 3:6, 3] == 200).all()
     assert out[..., 3].astype(bool).sum() == 9
+
+
+def test_height_source_keeps_resolution(tmp_path):
+    """height=source 면 기준 클립은 축소 없이(scale 1) 나오고, 다른 클립도 같은 크기로 맞춰진다."""
+    size = (480, 360)
+    _make_clip(tmp_path, "idle", 12, lambda i: _draw_char(size, 240, 330, 1.0))
+    _make_clip(tmp_path, "attack", 12, lambda i: _draw_char(size, 200, 350, 1.3))
+    cfg = {"name": "x", "default": "idle", "height": "source",
+           "clips": [{"name": "attack", "src": "attack.mp4"}, {"name": "idle", "src": "idle.mp4", "loop": True}]}
+    (tmp_path / "x.json").write_text(json.dumps(cfg))
+    rep = build(CharacterSpec.load(tmp_path / "x.json"), tmp_path / "out", previews=False, log=lambda *_: None)
+    # 원본 캐릭터 높이 200px + 여백 -> 셀 높이도 그 정도여야 함 (축소되지 않음)
+    assert 200 <= rep["cell"][1] <= 215
+    attack = next(c for c in rep["clips"] if c["clip"] == "attack")
+    assert attack["qa"]["startToBase"] < 0.04

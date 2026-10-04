@@ -41,7 +41,7 @@ def _init(folder: Path, name: str):
         print(f"{folder} 에 mp4 가 없어 예시 항목(idle_1.mp4)으로 만듭니다. 영상을 넣고 이름을 맞추세요.")
     default = next((c["name"] for c in clips if "idle" in c["name"].lower()), clips[0]["name"])
     cfg = {
-        "name": name, "default": default, "fps": 10, "height": 384,
+        "name": name, "default": default, "fps": 10, "height": "source",
         "key": {"mode": "chroma", "color": "auto", "tolerance": "auto"},
         "erase": [[0.62, 0.90, 1.0, 1.0]],
         "despeckle": 64,

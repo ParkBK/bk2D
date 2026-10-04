@@ -25,7 +25,7 @@ class CharacterSpec:
     clips: list[ClipSpec]
     default: str
     fps: float = 12.0
-    height: int = 512
+    height: int | str = 512           # 픽셀 높이, 또는 "source" = 기준 클립 원본 해상도 유지(축소 없음)
     key_mode: str = "chroma"          # chroma | rembg
     key_color: str = "auto"           # auto | #RRGGBB
     key_tol: tuple[float, float] | None = None   # None = 키 색 채도로 자동
@@ -33,10 +33,10 @@ class CharacterSpec:
     despeckle: int = 0                # 이 면적(px, 원본 해상도) 미만의 떨어진 덩어리 제거
     alpha_floor: int = 16             # 이 값 미만 알파는 0 (거의 투명한 얼룩 제거)
     alpha_smooth: float = 0.0
-    max_extract_height: int = 1080
+    max_extract_height: int = 2160    # 1080P 세로(3:4 = 1440px)도 줄이지 않도록
     padding: int = 4
     spacing: int = 2
-    max_atlas: int = 4096
+    max_atlas: int = 8192
     pixels_per_unit: int = 100
 
     @staticmethod
@@ -60,9 +60,9 @@ class CharacterSpec:
             despeckle=raw.get("despeckle", 0),
             alpha_floor=key.get("alpha_floor", 16),
             alpha_smooth=key.get("temporal_smooth", 0.0),
-            max_extract_height=raw.get("max_extract_height", 1080),
+            max_extract_height=raw.get("max_extract_height", 2160),
             padding=raw.get("padding", 4), spacing=raw.get("spacing", 2),
-            max_atlas=raw.get("max_atlas", 4096),
+            max_atlas=raw.get("max_atlas", 8192),
             pixels_per_unit=raw.get("pixels_per_unit", 100),
         )
 
@@ -85,7 +85,8 @@ def _qa_thumb(img: Image.Image, size: int = 96) -> np.ndarray:
     return np.asarray(small.convert("RGBA"), dtype=np.float32) / 255.0
 
 
-def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log) -> ClipResult:
+def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log,
+                 target_height: int | None) -> ClipResult:
     src_fps = video.probe_fps(spec.src)
     paths = video.extract_frames(spec.src, work / spec.name, ch.max_extract_height)
     notes = []
@@ -141,7 +142,12 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log) -> ClipResu
         notes.append(f"경고: 화면 {side} 끝에 닿음 — {len(hits)}/{len(frames)} 프레임, "
                      f"최대 {max(hits)}px → {kind}")
 
-    placement = layout.placement_from_base(frames[0], ch.height)
+    if target_height is None:  # "source": 이 클립(기준 클립)의 원본 크기를 그대로 쓴다
+        box = layout.alpha_bbox(frames[0])
+        if box is None:
+            raise RuntimeError("첫 프레임에서 캐릭터를 찾지 못했습니다. 키 색/허용치를 확인하세요.")
+        target_height = box[3] - box[1]
+    placement = layout.placement_from_base(frames[0], target_height)
     log(f"  [{spec.name}] {len(frames)} 프레임 @ {out_fps:g}fps")
     return ClipResult(spec, frames, placement, out_fps, loop_score, notes)
 
@@ -153,7 +159,17 @@ def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print) ->
     out_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="bk2d_") as tmp:
-        results = [process_clip(c, ch, Path(tmp), log) for c in ch.clips]
+        # 기준(default) 클립을 먼저 처리해 목표 높이를 정하고, 나머지 클립을 그 높이에 맞춘다.
+        order = sorted(ch.clips, key=lambda c: c.name != ch.default)
+        target = None if ch.height == "source" else int(ch.height)
+        done = {}
+        for c in order:
+            r = process_clip(c, ch, Path(tmp), log, target)
+            if target is None:
+                target = round(r.placement.scale * (lambda b: b[3] - b[1])(layout.alpha_bbox(r.frames[0])))
+                log(f"  원본 해상도 유지: 캐릭터 높이 {target}px")
+            done[c.name] = r
+        results = [done[c.name] for c in ch.clips]
 
     # 모든 클립이 같은 셀 크기/피벗을 공유해야 Unity 에서 전환 시 위치가 튀지 않는다.
     extents = [e for r in results for f in r.frames
@@ -175,6 +191,8 @@ def build(ch: CharacterSpec, out_dir: Path, previews: bool = True, log=print) ->
         atlas, rects = layout.pack_grid(cells, ch.spacing, ch.max_atlas)
         if max(atlas.size) > ch.max_atlas:
             r.notes.append(f"경고: 아틀라스 {atlas.size} 가 {ch.max_atlas} 초과 — fps/height 를 낮추세요")
+        elif max(atlas.size) > 4096:
+            r.notes.append(f"참고: 아틀라스 {atlas.size[0]}x{atlas.size[1]} — 4096 초과라 일부 저사양 모바일에서 미지원")
         stem = f"{ch.name}_{name}"
         atlas.save(out_dir / f"{stem}.png", optimize=True)
 
