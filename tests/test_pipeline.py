@@ -436,6 +436,20 @@ def test_stabilize_locks_axis_when_character_is_cut_at_edge():
     assert stabilize.locked_axes(frames[0]) == ["세로"]
 
 
+def test_stabilize_rejects_shift_that_worsens_alignment(monkeypatch):
+    """흔들리는 옷자락 때문에 위상 상관이 가짜 피크(-40px)를 잡아도, 실루엣이 더 어긋나면 적용하지 않는다."""
+    from bk2d import stabilize
+    frames = []
+    for i in range(4):
+        a = np.zeros((300, 200, 4), dtype=np.uint8)
+        a[40:260, 60:140] = (200, 120, 60, 255)                    # 제자리에 서 있는 몸
+        frames.append(a)
+    monkeypatch.setattr(stabilize, "_phase_shift", lambda ref, cur: (-40, 0, 0.12))
+    out, shifts = stabilize.stabilize(frames, "feet")
+    assert shifts == [(0, 0)] * 4
+    assert all(np.array_equal(o, f) for o, f in zip(out, frames))
+
+
 def test_check_command_reports_bounce_metrics(idle_long, capsys):
     from bk2d.cli import main
     _build_cfg(idle_long, "ck", fps=8, loop_seconds=[1.5, 2.5], loop_crossfade=2)
