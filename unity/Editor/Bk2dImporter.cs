@@ -84,6 +84,8 @@ namespace Bk2d.Editor
             ti.alphaIsTransparency = true;
             ti.mipmapEnabled = false;
             ti.filterMode = FilterMode.Bilinear;
+            // 일러스트 계열은 기본 압축에서 밴딩/블록 노이즈가 두드러진다.
+            ti.textureCompression = TextureImporterCompression.CompressedHQ;
             ti.GetSourceTextureWidthAndHeight(out var tw, out var th);
             ti.maxTextureSize = Mathf.Min(8192, Mathf.NextPowerOfTwo(Mathf.Max(tw, th)));
 

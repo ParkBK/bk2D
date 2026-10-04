@@ -31,6 +31,7 @@ class CharacterSpec:
     key_tol: tuple[float, float] | None = None   # None = 키 색 채도로 자동
     erase: list[list[float]] = field(default_factory=list)
     despeckle: int = 0                # 이 면적(px, 원본 해상도) 미만의 떨어진 덩어리 제거
+    alpha_floor: int = 16             # 이 값 미만 알파는 0 (거의 투명한 얼룩 제거)
     alpha_smooth: float = 0.0
     max_extract_height: int = 1080
     padding: int = 4
@@ -57,6 +58,7 @@ class CharacterSpec:
             key_tol=tuple(key["tolerance"]) if isinstance(key.get("tolerance"), list) else None,
             erase=raw.get("erase", []),
             despeckle=raw.get("despeckle", 0),
+            alpha_floor=key.get("alpha_floor", 16),
             alpha_smooth=key.get("temporal_smooth", 0.0),
             max_extract_height=raw.get("max_extract_height", 1080),
             padding=raw.get("padding", 4), spacing=raw.get("spacing", 2),
@@ -121,7 +123,8 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log) -> ClipResu
         frames = [matte.rembg_matte(f) for f in rgbs]
     else:
         raise ValueError(f"알 수 없는 key mode: {ch.key_mode}")
-    frames = [matte.despeckle(matte.erase_regions(f, ch.erase), ch.despeckle) for f in frames]
+    frames = [matte.despeckle(matte.alpha_floor(matte.erase_regions(f, ch.erase), ch.alpha_floor),
+                              ch.despeckle) for f in frames]
     frames = matte.temporal_smooth_alpha(frames, ch.alpha_smooth if spec.loop else 0.0)
 
     # 화면 가장자리 3px 띠에 걸친 픽셀 수로 "실제 잘림" 과 "잡티" 를 구분한다.

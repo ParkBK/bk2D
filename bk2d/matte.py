@@ -74,6 +74,18 @@ def _scipy_ndimage():
         return None
 
 
+def alpha_floor(rgba: np.ndarray, floor: int) -> np.ndarray:
+    """floor 미만 알파를 0 으로. 탁한 배경/영상 압축 노이즈가 남기는 거의 투명한 얼룩 제거.
+
+    눈에는 안 보여도 Unity Tight 메시가 이 얼룩마다 폴리곤을 만들고 오버드로가 생긴다.
+    """
+    if floor <= 0:
+        return rgba
+    out = rgba.copy()
+    out[out[..., 3] < floor, 3] = 0
+    return out
+
+
 def despeckle(rgba: np.ndarray, min_area: int) -> np.ndarray:
     """몸통과 떨어진 min_area 픽셀 미만의 작은 덩어리를 투명 처리 (키잉 잡티, 압축 노이즈)."""
     if min_area <= 0:

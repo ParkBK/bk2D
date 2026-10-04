@@ -163,3 +163,13 @@ def test_loop_search_range():
     assert end == 10 and score < 1e-5
     end_default, _ = timing.find_loop_end(thumbs)
     assert end_default >= 24
+
+
+def test_alpha_floor_removes_faint_haze():
+    from bk2d import matte
+    rgba = np.zeros((10, 10, 4), dtype=np.uint8)
+    rgba[..., 3] = 8          # 배경 얼룩
+    rgba[3:6, 3:6, 3] = 200   # 캐릭터
+    out = matte.alpha_floor(rgba, 16)
+    assert (out[3:6, 3:6, 3] == 200).all()
+    assert out[..., 3].astype(bool).sum() == 9
