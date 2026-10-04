@@ -450,9 +450,34 @@ def test_stabilize_rejects_shift_that_worsens_alignment(monkeypatch):
     assert all(np.array_equal(o, f) for o, f in zip(out, frames))
 
 
+def test_stabilize_ignores_hem_sway_when_head_stays():
+    """발 영역의 치맛자락만 옆으로 흔들리고 몸/머리는 그대로면, 몸 전체를 밀지 않는다."""
+    from bk2d import stabilize
+    frames = []
+    for i in range(8):
+        a = np.zeros((400, 240, 4), dtype=np.uint8)
+        a[40:100, 90:150] = (250, 210, 170, 255)                   # 머리 (고정)
+        a[60:70, 100:110] = (30, 30, 30, 255)                      # 눈 (측정용 무늬)
+        a[100:360, 80:160] = (200, 120, 60, 255)                   # 몸 (고정)
+        sway = 3 * i
+        a[300:380, 60 + sway:120 + sway] = (60, 40, 120, 255)      # 옆으로 흘러가는 치맛자락
+        frames.append(a)
+    _, shifts = stabilize.stabilize(frames, "feet")
+    assert all(dx == 0 for dx, _ in shifts)
+
 def test_check_command_reports_bounce_metrics(idle_long, capsys):
     from bk2d.cli import main
     _build_cfg(idle_long, "ck", fps=8, loop_seconds=[1.5, 2.5], loop_crossfade=2)
     assert main(["check", str(idle_long / "ck")]) == 0
     out = capsys.readouterr().out
     assert "바닥선 출렁임" in out and "루프 이음매 이동" in out and "판정:" in out
+
+
+def test_x_jumps_flags_single_frame_bounce_but_not_sway():
+    """전체 흔들림 폭에 묻히는 '한 프레임만 옆으로 튐' 을 잡고, 자연스러운 좌우 흔들림은 넘긴다."""
+    from bk2d.report import x_jumps
+    sway = [300 + 4 * math.sin(2 * math.pi * i / 20) for i in range(20)]
+    assert x_jumps(sway, loop=True, height=768) == []
+    bounce = list(sway)
+    bounce[8] += 27
+    assert [i for i, _ in x_jumps(bounce, loop=True, height=768)] == [8, 9]

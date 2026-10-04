@@ -73,6 +73,8 @@ def stabilize(frames: list[np.ndarray], region: str = "feet",
     m = max(8, int(bh * 0.05))  # 이동해도 영역 안에 머물도록 여유
     roi = (max(0, x0 - m), max(0, ry0 - m), min(w, x1 + m), min(h, y1 + m))
     limit = max(4, int(bh * max_ratio))
+    # 교차 확인용 머리 쪽 영역 (bbox 상단 25%)
+    head = (roi[0], max(0, y0 - m), roi[2], min(h, y0 + int(bh * 0.25) + m))
 
     # 캐릭터가 화면 끝에서 잘려 있으면 그 축으로는 옮기지 않는다.
     # 옮기면 잘린 선(예: 발목에서 끊긴 다리 끝)이 프레임마다 위아래로 움직여 "튕김"으로 보인다.
@@ -80,11 +82,19 @@ def stabilize(frames: list[np.ndarray], region: str = "feet",
     lock_x = x0 <= 1 or x1 >= w - 1
 
     ref = _signal(frames[0], roi)
+    ref_head = _signal(frames[0], head)
     out, shifts = [frames[0]], [(0, 0)]
     for f in frames[1:]:
         dx, dy, peak = _phase_shift(ref, _signal(f, roi))
         if abs(dx) > limit or abs(dy) > limit or peak < 0.05:
             dx, dy = 0, 0  # 신뢰할 수 없는 측정은 건드리지 않음
+        # 몸 전체가 옆으로 밀린 것이면 머리 쪽도 같은 방향으로 비슷하게 움직인다. 발 쪽만 움직였다면
+        # 치마/머리카락 같은 부분 동작이므로, 그걸 되돌리면 멀쩡한 몸 전체가 좌우로 흔들린다.
+        # 세로는 숨쉬기로 머리만 오르내리는 게 자연스러워 머리를 기준으로 삼지 않는다.
+        if dx:
+            hx = _phase_shift(ref_head, _signal(f, head))[0]
+            if hx * dx <= 0 or abs(dx - hx) > max(2, abs(dx) // 2):
+                dx = 0
         if lock_x:
             dx = 0
         if lock_y:

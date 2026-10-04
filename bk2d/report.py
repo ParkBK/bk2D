@@ -97,6 +97,22 @@ def _world_frames(d: Path, meta: dict):
                "pivot_out": not (0 <= pv["x"] <= 1 and 0 <= pv["y"] <= 1)}
 
 
+def x_jumps(cx, loop: bool, height: float) -> list[tuple[int, float]]:
+    """가로 위치가 갑자기 바뀌는 지점: [(바뀐 뒤 프레임 인덱스, 이동 px)].
+
+    전체 흔들림 폭(ptp)으로는 한 프레임만 옆으로 튀는 경우가 묻힌다.
+    평소 프레임 간 이동의 4배 이상이면서 캐릭터 키의 1%(최소 3px)를 넘는 이동을 잡는다.
+    """
+    import numpy as np
+    cx = np.asarray(cx, dtype=float)
+    if len(cx) < 3:
+        return []
+    steps = np.diff(np.r_[cx, cx[:1]]) if loop else np.diff(cx)
+    med = float(np.median(np.abs(steps)))
+    limit = max(4 * med, 0.01 * height, 3.0)
+    return [((i + 1) % len(cx), float(v)) for i, v in enumerate(steps) if abs(v) > limit]
+
+
 def check(folder: Path) -> str:
     """출력 데이터만으로 '튕김' 을 측정한다. Unity 배치와 같은 계산(피벗 기준)."""
     import numpy as np
@@ -128,6 +144,9 @@ def check(folder: Path) -> str:
             shifts = applied.get("stabShifts") or []
             max_shift = max((max(abs(a), abs(b)) for a, b in shifts), default=0)
             pv_out = sum(s["pivot_out"] for s in seq)
+            names = [i for i in order if fr[i] is not None]
+            height = float(np.median(t - g))
+            jumps = x_jumps([s["cx"] for s in seq], loop, height)
             out.append(f"[{ch['name']}] {c['name']}  ({len(fr)}프레임, 재생 {len(seq)}, {meta.get('playback', '')})")
             out.append(f"  바닥선 출렁임   {np.ptp(g):6.1f}px   (잘린 다리/발끝 선. 1px 넘으면 위아래로 튐)")
             out.append(f"  머리끝 출렁임   {np.ptp(t):6.1f}px")
@@ -136,6 +155,8 @@ def check(folder: Path) -> str:
                 ratio = seam / med if med > 0 else 0
                 out.append(f"  루프 이음매 이동 {seam:6.2f}px  (평소 프레임 간 {med:.2f}px, {ratio:.1f}배)")
             out.append(f"  움직임 방향 전환 {flips}회")
+            if jumps:
+                out.append("  좌우 튕김       " + ", ".join(f"{names[i]:03d}번 프레임 {v:+.1f}px" for i, v in jumps))
             out.append(f"  흔들림 보정 최대 {max_shift}px, 잠근 축 {applied.get('stabLocked') or '-'}"
                        f"{', 피벗 범위 밖 프레임 ' + str(pv_out) if pv_out else ''}")
             verdict = []
@@ -145,6 +166,8 @@ def check(folder: Path) -> str:
                 verdict.append("루프 이음매에서 점프")
             if flips > max(4, len(seq) // 3):
                 verdict.append("방향이 너무 자주 바뀜 → 떨림/핑퐁 느낌")
+            if jumps:
+                verdict.append("특정 프레임에서 좌우로 튐 → 흔들림 보정 오측정 가능성 (stabilize none 으로 비교)")
             if pv_out:
                 verdict.append("피벗이 스프라이트 밖 → Unity 처리에 따라 위치가 어긋날 수 있음")
             out.append("  판정: " + ("; ".join(verdict) if verdict else
