@@ -43,7 +43,7 @@ def _make_clip(tmp: Path, name: str, n: int, fn) -> Path:
 
 def _reconstruct(out: Path, meta_json: Path) -> list[np.ndarray]:
     """JSON 의 페이지/rect/trim 오프셋으로 트리밍 전 공통 셀 프레임을 복원한다."""
-    meta = json.loads(meta_json.read_text())
+    meta = json.loads(meta_json.read_text(encoding="utf-8"))
     pages = [np.asarray(Image.open(out / im).convert("RGBA")) for im in meta.get("images", [meta["image"]])]
     cw, chh = meta["cell"]["w"], meta["cell"]["h"]
     cells = []
@@ -80,7 +80,7 @@ def built(tmp_path_factory):
         "clips": [{"name": "idle", "src": "idle.mp4", "loop": True},
                   {"name": "attack", "src": "attack.mp4"}],
     }
-    (tmp / "hero.json").write_text(json.dumps(cfg))
+    (tmp / "hero.json").write_text(json.dumps(cfg), encoding="utf-8")
     out = tmp / "out"
     rep = build(CharacterSpec.load(tmp / "hero.json"), out, log=lambda *_: None)
     return out, rep
@@ -117,14 +117,14 @@ def test_clips_aligned_to_base_pose(built):
     # 구도가 달라도 정렬 후 시작/끝 포즈가 기준 포즈와 일치해야 함
     assert attack["qa"]["startToBase"] < 0.04
     assert attack["qa"]["endToBase"] < 0.04
-    a = json.loads((out / "hero_idle.json").read_text())
-    b = json.loads((out / "hero_attack.json").read_text())
+    a = json.loads((out / "hero_idle.json").read_text(encoding="utf-8"))
+    b = json.loads((out / "hero_attack.json").read_text(encoding="utf-8"))
     assert a["cell"] == b["cell"] and a["pivot"] == b["pivot"]
 
 
 def test_rects_inside_atlas(built):
     out, _ = built
-    meta = json.loads((out / "hero_attack.json").read_text())
+    meta = json.loads((out / "hero_attack.json").read_text(encoding="utf-8"))
     w, h = Image.open(out / meta["image"]).size
     assert w % 4 == 0 and h % 4 == 0
     for r in meta["frames"]:
@@ -138,7 +138,7 @@ def test_pose_mismatch_is_flagged(tmp_path):
     _make_clip(tmp_path, "bad", 24, lambda i: _draw_char(size, 240, 330, 1.0, arm=i / 23, bob=-20 * i / 23))
     cfg = {"name": "x", "default": "idle", "height": 200,
            "clips": [{"name": "idle", "src": "idle.mp4"}, {"name": "bad", "src": "bad.mp4"}]}
-    (tmp_path / "x.json").write_text(json.dumps(cfg))
+    (tmp_path / "x.json").write_text(json.dumps(cfg), encoding="utf-8")
     rep = build(CharacterSpec.load(tmp_path / "x.json"), tmp_path / "out", previews=False, log=lambda *_: None)
     bad = next(c for c in rep["clips"] if c["clip"] == "bad")
     assert bad["qa"]["endToBase"] > 0.08
@@ -205,7 +205,7 @@ def test_height_source_keeps_resolution(tmp_path):
     _make_clip(tmp_path, "attack", 12, lambda i: _draw_char(size, 200, 350, 1.3))
     cfg = {"name": "x", "default": "idle", "height": "source",
            "clips": [{"name": "attack", "src": "attack.mp4"}, {"name": "idle", "src": "idle.mp4", "loop": True}]}
-    (tmp_path / "x.json").write_text(json.dumps(cfg))
+    (tmp_path / "x.json").write_text(json.dumps(cfg), encoding="utf-8")
     rep = build(CharacterSpec.load(tmp_path / "x.json"), tmp_path / "out", previews=False, log=lambda *_: None)
     # 원본 캐릭터 높이 200px + 여백 -> 셀 높이도 그 정도여야 함 (축소되지 않음)
     assert 200 <= rep["cell"][1] <= 215
@@ -223,15 +223,15 @@ def test_profiles_build_two_variants(tmp_path):
            "profiles": {"battle": {"height": 100},
                         "lobby": {"height": 300, "only": ["idle"], "target": "ui"}},
            "clips": [{"name": "idle", "src": "idle.mp4", "loop": True}, {"name": "attack", "src": "attack.mp4"}]}
-    (tmp_path / "hero.json").write_text(json.dumps(cfg))
+    (tmp_path / "hero.json").write_text(json.dumps(cfg), encoding="utf-8")
     out = tmp_path / "out"
     assert main(["build", str(tmp_path / "hero.json"), "-o", str(out), "--no-preview",
                  "--report", str(tmp_path / "r.json")]) == 0
-    battle = json.loads((out / "battle" / "hero_battle.character.json").read_text())
-    lobby = json.loads((out / "lobby" / "hero_lobby.character.json").read_text())
+    battle = json.loads((out / "battle" / "hero_battle.character.json").read_text(encoding="utf-8"))
+    lobby = json.loads((out / "lobby" / "hero_lobby.character.json").read_text(encoding="utf-8"))
     assert [c["name"] for c in battle["clips"]] == ["idle", "attack"]
     assert [c["name"] for c in lobby["clips"]] == ["idle"] and lobby["target"] == "ui"
-    rep = json.loads((tmp_path / "r.json").read_text())
+    rep = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
     # 원본 캐릭터 높이 200px -> lobby 300 은 확대 경고가 있어야 함
     assert any("확대" in n for n in rep["lobby"]["clips"][0]["notes"])
     assert not any("확대" in n for n in rep["battle"]["clips"][0]["notes"])
@@ -256,7 +256,7 @@ def test_stabilize_removes_whole_body_jitter(tmp_path, stab):
         size, 240 + jitter[i][0], 330 + jitter[i][1], 1.0, bob=4 * math.sin(2 * math.pi * i / 36)))
     cfg = {"name": "x", "default": "idle", "height": "source", "fps": 24, "stabilize": stab,
            "clips": [{"name": "idle", "src": "idle.mp4", "loop": True}]}
-    (tmp_path / "x.json").write_text(json.dumps(cfg))
+    (tmp_path / "x.json").write_text(json.dumps(cfg), encoding="utf-8")
     build(CharacterSpec.load(tmp_path / "x.json"), tmp_path / "out", previews=False, log=lambda *_: None)
     pos = _feet_positions(tmp_path / "out" / "x_idle.png", tmp_path / "out" / "x_idle.json")
     spread = (pos.max(axis=0) - pos.min(axis=0)).max()
@@ -273,18 +273,18 @@ def test_sync_clips_adds_new_videos_and_ignores_underscore(tmp_path):
     cfg = {"name": "hero", "default": "idle_1", "clips": [project.clip_entry("idle_1.mp4")],
            "profiles": {"lobby": {"only": ["idle_1"]}}}
     p = tmp_path / "hero.json"
-    p.write_text(json.dumps(cfg))
+    p.write_text(json.dumps(cfg), encoding="utf-8")
     assert project.sync_clips(p) == ([], [])
     _make_clip(tmp_path, "attack_1", 12, lambda i: _draw_char(size, 240, 330, 1.0, arm=i / 11))
     _make_clip(tmp_path, "_attack_old", 12, lambda i: _draw_char(size, 240, 330, 1.0))
     _make_clip(tmp_path, "walk", 12, lambda i: _draw_char(size, 240, 330, 1.0))
     added, removed = project.sync_clips(p)
     assert added == ["attack_1", "walk"] and removed == []
-    clips = {c["name"]: c for c in json.loads(p.read_text())["clips"]}
+    clips = {c["name"]: c for c in json.loads(p.read_text(encoding="utf-8"))["clips"]}
     assert clips["attack_1"]["loop"] is False and clips["walk"]["loop"] is True
     (tmp_path / "idle_1.mp4").unlink()
     added, removed = project.sync_clips(p)
-    raw = json.loads(p.read_text())
+    raw = json.loads(p.read_text(encoding="utf-8"))
     assert removed == ["idle_1"] and raw["default"] == "walk"
     assert raw["profiles"]["lobby"]["only"] == ["walk"]
 
@@ -299,7 +299,7 @@ def test_build_into_unity_assets_keeps_previews_out(tmp_path):
     _make_clip(work, "attack_1", 12, lambda i: _draw_char(size, 240, 330, 1.0, arm=i / 11))  # init 이후 추가
     assets = tmp_path / "MyGame" / "Assets" / "Characters" / "hero"
     assert main(["build", str(work / "hero.json"), "-o", str(assets)]) == 0
-    battle = json.loads((assets / "battle" / "hero_battle.character.json").read_text())
+    battle = json.loads((assets / "battle" / "hero_battle.character.json").read_text(encoding="utf-8"))
     assert [c["name"] for c in battle["clips"]] == ["idle_1", "attack_1"] and "built" in battle
     assert not list(assets.rglob("*.gif")) and not list(assets.rglob("*.webp"))
     assert (work / "_preview" / "battle" / "hero_battle_attack_1.webp").exists()
@@ -321,7 +321,7 @@ def _build_cfg(tmp, out_name, **cfg):
         clips.append({"name": "attack", "src": "attack.mp4"})
     base = {"name": "x", "default": "idle", "height": 200, "clips": clips}
     base.update(cfg)
-    (tmp / f"{out_name}.json").write_text(json.dumps(base))
+    (tmp / f"{out_name}.json").write_text(json.dumps(base), encoding="utf-8")
     rep = build(CharacterSpec.load(tmp / f"{out_name}.json"), tmp / out_name, previews=False, log=lambda *_: None)
     return {c["clip"]: c for c in rep["clips"]}
 
@@ -345,7 +345,7 @@ def test_max_frames(idle_long):
 def test_pingpong_halves_frames(idle_long):
     pp = _build_cfg(idle_long, "pp1", fps=12, loop_seconds=[1.5, 2.5], pingpong=True)
     assert pp["idle"]["playback"] == "pingpong"
-    meta = json.loads((idle_long / "pp1" / "x_idle.json").read_text())
+    meta = json.loads((idle_long / "pp1" / "x_idle.json").read_text(encoding="utf-8"))
     n = len(meta["frames"])
     assert meta["sequence"] == list(range(n)) + list(range(n - 2, 0, -1))
     assert n == len(meta["sequence"]) // 2 + 1         # 저장 = 재생의 절반 + 1
@@ -358,7 +358,7 @@ def test_pingpong_halves_frames(idle_long):
 def test_multi_page_and_trim(idle_long):
     clips = _build_cfg(idle_long, "pg", fps=12, max_texture=256, height=120)
     out = idle_long / "pg"
-    meta = json.loads((out / "x_idle.json").read_text())
+    meta = json.loads((out / "x_idle.json").read_text(encoding="utf-8"))
     assert len(meta["images"]) > 1
     for im in meta["images"]:
         w, h = Image.open(out / im).size
@@ -373,13 +373,13 @@ def test_ui_target_is_not_trimmed_and_meta_written(idle_long):
     raw = {"name": "x", "default": "idle", "height": 200, **cfg,
            "clips": [{"name": "idle", "src": "idle.mp4", "loop": True,
                       "meta": {"service": "Higgsfield", "seed": "1234", "prompt": "breathing", "reference": "base.png"}}]}
-    (idle_long / "ui.json").write_text(json.dumps(raw))
+    (idle_long / "ui.json").write_text(json.dumps(raw), encoding="utf-8")
     build(CharacterSpec.load(idle_long / "ui.json"), idle_long / "ui", previews=False, log=lambda *_: None)
-    meta = json.loads((idle_long / "ui" / "x_idle.json").read_text())
+    meta = json.loads((idle_long / "ui" / "x_idle.json").read_text(encoding="utf-8"))
     assert all(f["w"] == meta["cell"]["w"] and f["h"] == meta["cell"]["h"] for f in meta["frames"])
     assert meta["meta"]["service"] == "Higgsfield" and meta["meta"]["seed"] == "1234"
     assert meta["meta"]["tool"].startswith("bk2d ") and len(meta["meta"]["sourceSha1"]) == 40
-    man = json.loads((idle_long / "ui" / "x.character.json").read_text())
+    man = json.loads((idle_long / "ui" / "x.character.json").read_text(encoding="utf-8"))
     assert man["unity"] == {"maxTextureSize": 1024, "format": "ASTC_8x8", "platforms": ["Android", "iPhone"]}
 
 
@@ -413,7 +413,7 @@ def test_profile_timing_mismatch_warns(idle_long, capsys):
     cfg = {"name": "x", "default": "idle", "fps": 8, "loop_seconds": [1.5, 2.5], "pingpong": True,
            "profiles": {"battle": {"height": 150}, "lobby": {"height": 200, "max_frames": 4}},
            "clips": [{"name": "idle", "src": "idle.mp4", "loop": True}]}
-    (idle_long / "tm.json").write_text(json.dumps(cfg))
+    (idle_long / "tm.json").write_text(json.dumps(cfg), encoding="utf-8")
     assert main(["build", str(idle_long / "tm.json"), "-o", str(idle_long / "tm"), "--no-preview", "--no-sync"]) == 0
     assert "동작 타이밍이 프로필마다 다릅니다" in capsys.readouterr().out
 
