@@ -58,14 +58,29 @@ def erase_regions(rgba: np.ndarray, rects) -> np.ndarray:
     return out
 
 
+_SCIPY_WARNED = False
+
+
+def _scipy_ndimage():
+    """scipy 가 없으면 None. 선택 기능이므로 빌드 전체를 멈추지 않고 한 번만 경고한다."""
+    global _SCIPY_WARNED
+    try:
+        from scipy import ndimage
+        return ndimage
+    except ImportError:
+        if not _SCIPY_WARNED:
+            print("  [경고] scipy 가 없어 despeckle(잡티 제거)를 건너뜁니다. 설치: pip install scipy")
+            _SCIPY_WARNED = True
+        return None
+
+
 def despeckle(rgba: np.ndarray, min_area: int) -> np.ndarray:
     """몸통과 떨어진 min_area 픽셀 미만의 작은 덩어리를 투명 처리 (키잉 잡티, 압축 노이즈)."""
     if min_area <= 0:
         return rgba
-    try:
-        from scipy import ndimage
-    except ImportError as e:
-        raise RuntimeError("despeckle 은 scipy 가 필요합니다: pip install scipy") from e
+    ndimage = _scipy_ndimage()
+    if ndimage is None:
+        return rgba
     mask = rgba[..., 3] > 0
     labels, n = ndimage.label(mask, structure=np.ones((3, 3)))
     if n <= 1:
