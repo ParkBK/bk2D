@@ -50,6 +50,14 @@ def _shift(rgba: np.ndarray, dx: int, dy: int) -> np.ndarray:
     return out
 
 
+def _misfit(ref: np.ndarray, cur: np.ndarray, box, dx: int, dy: int) -> float:
+    """cur 를 (dx, dy) 만큼 되돌렸을 때 기준 영역 실루엣이 ref 와 어긋나는 정도 (0 = 일치)."""
+    x0, y0, x1, y1 = box
+    a = ref[y0:y1, x0:x1, 3].astype(np.float32)
+    b = _shift(cur, -dx, -dy)[y0:y1, x0:x1, 3].astype(np.float32)
+    return float(np.abs(a - b).mean())
+
+
 def stabilize(frames: list[np.ndarray], region: str = "feet",
               max_ratio: float = 0.08) -> tuple[list[np.ndarray], list[tuple[int, int]]]:
     """첫 프레임 기준으로 각 프레임의 기준 영역 이동을 되돌린다. 반환: (보정 프레임, 프레임별 측정 이동량)."""
@@ -81,6 +89,11 @@ def stabilize(frames: list[np.ndarray], region: str = "feet",
             dx = 0
         if lock_y:
             dy = 0
+        # 치마/머리카락처럼 기준 영역 안에서 흔들리는 부분이 크면 위상 상관이 가짜 피크를 잡는다
+        # (실제 발은 그대로인데 -40px 같은 이동이 나와 그 프레임만 튕김).
+        # 되돌렸을 때 실루엣이 첫 프레임과 더 잘 맞지 않으면 측정 오류로 보고 버린다.
+        if (dx or dy) and _misfit(frames[0], f, roi, dx, dy) >= _misfit(frames[0], f, roi, 0, 0):
+            dx, dy = 0, 0
         shifts.append((dx, dy))
         out.append(_shift(f, -dx, -dy))
     return out, shifts
