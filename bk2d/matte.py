@@ -31,6 +31,33 @@ def _dilate(mask: np.ndarray, radius: int) -> np.ndarray:
     return out
 
 
+def key_saturation(key: np.ndarray) -> float:
+    """키 색의 채도(CbCr 원점 거리). 무채색(검정/흰색/회색)과 얼마나 떨어져 있는지."""
+    return float(np.linalg.norm(_cbcr(key.astype(np.float32))))
+
+
+def auto_tolerance(key: np.ndarray) -> tuple[float, float]:
+    """키 색 채도에 맞춘 허용치.
+
+    허용치가 키 채도보다 크면 검은 머리/어두운 옷 같은 무채색까지 반투명해진다.
+    선명한 #00FF00(채도 ~136)이면 (20, 45), 탁한 초록(채도 ~44)이면 (~12, ~26).
+    """
+    sat = key_saturation(key)
+    high = min(45.0, 0.6 * sat)
+    return min(20.0, 0.45 * high), high
+
+
+def erase_regions(rgba: np.ndarray, rects) -> np.ndarray:
+    """정규화 좌표 [x0, y0, x1, y1] 영역을 완전 투명으로 (워터마크 등)."""
+    if not rects:
+        return rgba
+    h, w = rgba.shape[:2]
+    out = rgba.copy()
+    for x0, y0, x1, y1 in rects:
+        out[int(y0 * h):int(round(y1 * h)), int(x0 * w):int(round(x1 * w)), 3] = 0
+    return out
+
+
 def chroma_key(rgb: np.ndarray, key: np.ndarray, tol_low: float = 20.0,
                tol_high: float = 45.0, despill: bool = True) -> np.ndarray:
     """RGB(uint8) -> RGBA(uint8). 색차(CbCr) 거리로 소프트 매트를 만든다.

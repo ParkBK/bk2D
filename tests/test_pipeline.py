@@ -119,3 +119,25 @@ def test_pose_mismatch_is_flagged(tmp_path):
     rep = build(CharacterSpec.load(tmp_path / "x.json"), tmp_path / "out", previews=False, log=lambda *_: None)
     bad = next(c for c in rep["clips"] if c["clip"] == "bad")
     assert bad["qa"]["endToBase"] > 0.08
+
+
+def test_dull_green_keeps_dark_character_opaque():
+    """탁한 초록 배경(실제 생성 영상 수준)에서도 검은 머리/남색 옷이 반투명해지면 안 된다."""
+    from bk2d import matte
+    key = np.array([76, 169, 120], dtype=np.float32)
+    rgb = np.zeros((4, 3, 3), dtype=np.uint8)
+    rgb[0] = (20, 20, 25)     # 검은 머리
+    rgb[1] = (30, 35, 80)     # 남색 옷
+    rgb[2] = (240, 215, 200)  # 피부
+    rgb[3] = key.astype(np.uint8)
+    out = matte.chroma_key(rgb, key, *matte.auto_tolerance(key))
+    assert (out[:3, :, 3] == 255).all()
+    assert (out[3, :, 3] == 0).all()
+
+
+def test_erase_regions():
+    from bk2d import matte
+    rgba = np.full((100, 100, 4), 255, dtype=np.uint8)
+    out = matte.erase_regions(rgba, [[0.6, 0.9, 1.0, 1.0]])
+    assert (out[90:, 60:, 3] == 0).all()
+    assert (out[:90, :, 3] == 255).all() and (out[:, :60, 3] == 255).all()

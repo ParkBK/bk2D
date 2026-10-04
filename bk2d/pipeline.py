@@ -27,7 +27,8 @@ class CharacterSpec:
     height: int = 512
     key_mode: str = "chroma"          # chroma | rembg
     key_color: str = "auto"           # auto | #RRGGBB
-    key_tol: tuple[float, float] = (20.0, 45.0)
+    key_tol: tuple[float, float] | None = None   # None = 키 색 채도로 자동
+    erase: list[list[float]] = field(default_factory=list)
     alpha_smooth: float = 0.0
     max_extract_height: int = 1080
     padding: int = 4
@@ -46,7 +47,8 @@ class CharacterSpec:
             name=raw["name"], clips=clips, default=raw.get("default", clips[0].name),
             fps=raw.get("fps", 12.0), height=raw.get("height", 512),
             key_mode=key.get("mode", "chroma"), key_color=key.get("color", "auto"),
-            key_tol=tuple(key.get("tolerance", [20.0, 45.0])),
+            key_tol=tuple(key["tolerance"]) if isinstance(key.get("tolerance"), list) else None,
+            erase=raw.get("erase", []),
             alpha_smooth=key.get("temporal_smooth", 0.0),
             max_extract_height=raw.get("max_extract_height", 1080),
             padding=raw.get("padding", 4), spacing=raw.get("spacing", 2),
@@ -95,13 +97,35 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log) -> ClipResu
     if ch.key_mode == "chroma":
         key = (matte.estimate_key_color(rgbs[0]) if ch.key_color == "auto"
                else matte.parse_color(ch.key_color))
-        notes.append("키 색 " + "#%02x%02x%02x" % tuple(int(v) for v in key))
-        frames = [matte.chroma_key(f, key, *ch.key_tol) for f in rgbs]
+        tol = ch.key_tol or matte.auto_tolerance(key)
+        sat = matte.key_saturation(key)
+        notes.append("키 색 #%02x%02x%02x (채도 %.0f), 허용치 %.0f~%.0f"
+                     % (*(int(v) for v in key), sat, *tol))
+        if sat < 60:
+            notes.append("경고: 배경 초록이 탁함 — 어두운 머리/옷이 반투명해질 수 있음. "
+                         "선명한 #00FF00 배경으로 생성하는 것이 안전")
+        frames = [matte.chroma_key(f, key, *tol) for f in rgbs]
     elif ch.key_mode == "rembg":
         frames = [matte.rembg_matte(f) for f in rgbs]
     else:
         raise ValueError(f"알 수 없는 key mode: {ch.key_mode}")
+    frames = [matte.erase_regions(f, ch.erase) for f in frames]
     frames = matte.temporal_smooth_alpha(frames, ch.alpha_smooth if spec.loop else 0.0)
+
+    touched = set()
+    for f in frames:
+        box = layout.alpha_bbox(f)
+        if box is None:
+            continue
+        h, w = f.shape[:2]
+        x0, y0, x1, y1 = box
+        if y0 <= 1: touched.add("위")
+        if y1 >= h - 1: touched.add("아래")
+        if x0 <= 1: touched.add("왼쪽")
+        if x1 >= w - 1: touched.add("오른쪽")
+    if touched:
+        notes.append(f"경고: 캐릭터가 화면 {'/'.join(sorted(touched))} 끝에 닿음 — 잘렸을 가능성 "
+                     "(워터마크/잡티라면 erase 로 지정)")
 
     placement = layout.placement_from_base(frames[0], ch.height)
     log(f"  [{spec.name}] {len(frames)} 프레임 @ {out_fps:g}fps")

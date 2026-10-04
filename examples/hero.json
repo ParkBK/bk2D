@@ -7,9 +7,10 @@
   "key": {
     "mode": "chroma",
     "color": "auto",
-    "tolerance": [20, 45],
+    "tolerance": "auto",
     "temporal_smooth": 0.0
   },
+  "erase": [[0.62, 0.90, 1.0, 1.0]],
   "clips": [
     { "name": "idle",   "src": "hero_idle.mp4",   "loop": true },
     { "name": "walk",   "src": "hero_walk.mp4",   "loop": true },
