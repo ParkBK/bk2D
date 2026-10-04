@@ -28,11 +28,14 @@ def extract_frames(src: Path, out_dir: Path, max_height: int) -> list[Path]:
     """영상의 모든 프레임을 PNG 로 추출한다. max_height 보다 크면 축소한다."""
     out_dir.mkdir(parents=True, exist_ok=True)
     vf = f"scale=-2:'min({max_height},ih)':flags=lanczos"
-    subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vf", vf,
-         "-vsync", "0", str(out_dir / "f_%05d.png")],
-        check=True,
-    )
+    base = ["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vf", vf]
+    out = str(out_dir / "f_%05d.png")
+    # 프레임 복제/누락 없이 원본 프레임 그대로 추출.
+    # ffmpeg 5.1+ 는 -fps_mode, 7.0+ 에서 -vsync 제거됨. 구버전 대비 폴백.
+    try:
+        subprocess.run(base + ["-fps_mode", "passthrough", out], check=True, capture_output=True)
+    except subprocess.CalledProcessError:
+        subprocess.run(base + ["-vsync", "0", out], check=True)
     frames = sorted(out_dir.glob("f_*.png"))
     if not frames:
         raise RuntimeError(f"{src} 에서 프레임을 추출하지 못했습니다.")
