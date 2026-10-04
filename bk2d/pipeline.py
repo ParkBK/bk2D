@@ -16,6 +16,7 @@ class ClipSpec:
     src: Path
     loop: bool = False
     fps: float | None = None
+    loop_seconds: tuple[float, float] | None = None  # 루프 길이 탐색 범위 (최소, 최대)
 
 
 @dataclass
@@ -29,6 +30,7 @@ class CharacterSpec:
     key_color: str = "auto"           # auto | #RRGGBB
     key_tol: tuple[float, float] | None = None   # None = 키 색 채도로 자동
     erase: list[list[float]] = field(default_factory=list)
+    despeckle: int = 0                # 이 면적(px, 원본 해상도) 미만의 떨어진 덩어리 제거
     alpha_smooth: float = 0.0
     max_extract_height: int = 1080
     padding: int = 4
@@ -40,8 +42,13 @@ class CharacterSpec:
     def load(path: Path) -> "CharacterSpec":
         raw = json.loads(path.read_text(encoding="utf-8-sig"))  # 메모장 BOM 허용
         base = path.parent
+        def loop_range(d):
+            r = d.get("loop_seconds")
+            return tuple(r) if r else None
         clips = [ClipSpec(name=c["name"], src=(base / c["src"]).resolve(),
-                          loop=c.get("loop", False), fps=c.get("fps")) for c in raw["clips"]]
+                          loop=c.get("loop", False), fps=c.get("fps"),
+                          loop_seconds=loop_range(c) or loop_range(raw))
+                 for c in raw["clips"]]
         key = raw.get("key", {})
         return CharacterSpec(
             name=raw["name"], clips=clips, default=raw.get("default", clips[0].name),
@@ -49,6 +56,7 @@ class CharacterSpec:
             key_mode=key.get("mode", "chroma"), key_color=key.get("color", "auto"),
             key_tol=tuple(key["tolerance"]) if isinstance(key.get("tolerance"), list) else None,
             erase=raw.get("erase", []),
+            despeckle=raw.get("despeckle", 0),
             alpha_smooth=key.get("temporal_smooth", 0.0),
             max_extract_height=raw.get("max_extract_height", 1080),
             padding=raw.get("padding", 4), spacing=raw.get("spacing", 2),
@@ -83,9 +91,13 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log) -> ClipResu
 
     if spec.loop:
         thumbs = [video.load_thumb(p) for p in paths]
-        end, loop_score = timing.find_loop_end(thumbs)
+        if spec.loop_seconds:
+            lo_s, hi_s = spec.loop_seconds
+            end, loop_score = timing.find_loop_end(thumbs, round(lo_s * src_fps), round(hi_s * src_fps))
+        else:
+            end, loop_score = timing.find_loop_end(thumbs)
         if end < len(paths):
-            notes.append(f"루프 구간 {end}/{len(paths)} 프레임으로 자름")
+            notes.append(f"루프 구간 {end}/{len(paths)} 프레임 ({end / src_fps:.2f}초)으로 자름")
         paths = paths[:end]
 
     dst_fps = spec.fps or ch.fps
@@ -109,23 +121,22 @@ def process_clip(spec: ClipSpec, ch: CharacterSpec, work: Path, log) -> ClipResu
         frames = [matte.rembg_matte(f) for f in rgbs]
     else:
         raise ValueError(f"알 수 없는 key mode: {ch.key_mode}")
-    frames = [matte.erase_regions(f, ch.erase) for f in frames]
+    frames = [matte.despeckle(matte.erase_regions(f, ch.erase), ch.despeckle) for f in frames]
     frames = matte.temporal_smooth_alpha(frames, ch.alpha_smooth if spec.loop else 0.0)
 
-    touched = set()
+    # 화면 가장자리 3px 띠에 걸친 픽셀 수로 "실제 잘림" 과 "잡티" 를 구분한다.
+    sides = {"위": [], "아래": [], "왼쪽": [], "오른쪽": []}
     for f in frames:
-        box = layout.alpha_bbox(f)
-        if box is None:
+        m = f[..., 3] > layout.ALPHA_THRESHOLD
+        for side, strip in (("위", m[:3]), ("아래", m[-3:]), ("왼쪽", m[:, :3]), ("오른쪽", m[:, -3:])):
+            if (cnt := int(strip.sum())) > 0:
+                sides[side].append(cnt)
+    for side, hits in sides.items():
+        if not hits:
             continue
-        h, w = f.shape[:2]
-        x0, y0, x1, y1 = box
-        if y0 <= 1: touched.add("위")
-        if y1 >= h - 1: touched.add("아래")
-        if x0 <= 1: touched.add("왼쪽")
-        if x1 >= w - 1: touched.add("오른쪽")
-    if touched:
-        notes.append(f"경고: 캐릭터가 화면 {'/'.join(sorted(touched))} 끝에 닿음 — 잘렸을 가능성 "
-                     "(워터마크/잡티라면 erase 로 지정)")
+        kind = "잡티 가능성 큼 (despeckle 권장)" if max(hits) < 30 else "실제로 잘렸을 가능성 큼"
+        notes.append(f"경고: 화면 {side} 끝에 닿음 — {len(hits)}/{len(frames)} 프레임, "
+                     f"최대 {max(hits)}px → {kind}")
 
     placement = layout.placement_from_base(frames[0], ch.height)
     log(f"  [{spec.name}] {len(frames)} 프레임 @ {out_fps:g}fps")

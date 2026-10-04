@@ -17,17 +17,19 @@ def frame_diff(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.mean(np.abs(a - b)))
 
 
-def find_loop_end(thumbs: list[np.ndarray], min_ratio: float = 0.6) -> tuple[int, float]:
-    """프레임 0 과 가장 비슷한 후반부 프레임 j 를 찾는다.
+def find_loop_end(thumbs: list[np.ndarray], lo: int | None = None,
+                  hi: int | None = None) -> tuple[int, float]:
+    """프레임 0 과 가장 비슷한 프레임 j (lo <= j <= hi) 를 찾는다.
 
     반환값 end 는 배타적 끝 인덱스이므로 [0, end) 를 반복 재생하면 end 에서 0 으로 이어진다.
+    lo/hi 를 주지 않으면 영상 후반 40% 에서 찾는다 (가능한 긴 루프).
     """
     n = len(thumbs)
-    start = max(2, int(n * min_ratio))
-    if start >= n:
+    lo = max(2, int(n * 0.6) if lo is None else lo)
+    hi = n - 1 if hi is None else min(hi, n - 1)
+    if lo > hi:
         return n, frame_diff(thumbs[-1], thumbs[0])
-    scores = [(frame_diff(thumbs[j], thumbs[0]), j) for j in range(start, n)]
-    score, j = min(scores)
+    score, j = min((frame_diff(thumbs[j], thumbs[0]), j) for j in range(lo, hi + 1))
     return j, score
 
 

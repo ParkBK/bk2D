@@ -58,6 +58,28 @@ def erase_regions(rgba: np.ndarray, rects) -> np.ndarray:
     return out
 
 
+def despeckle(rgba: np.ndarray, min_area: int) -> np.ndarray:
+    """몸통과 떨어진 min_area 픽셀 미만의 작은 덩어리를 투명 처리 (키잉 잡티, 압축 노이즈)."""
+    if min_area <= 0:
+        return rgba
+    try:
+        from scipy import ndimage
+    except ImportError as e:
+        raise RuntimeError("despeckle 은 scipy 가 필요합니다: pip install scipy") from e
+    mask = rgba[..., 3] > 0
+    labels, n = ndimage.label(mask, structure=np.ones((3, 3)))
+    if n <= 1:
+        return rgba
+    sizes = np.bincount(labels.ravel())
+    small = sizes < min_area
+    small[0] = False
+    if not small.any():
+        return rgba
+    out = rgba.copy()
+    out[small[labels], 3] = 0
+    return out
+
+
 def chroma_key(rgb: np.ndarray, key: np.ndarray, tol_low: float = 20.0,
                tol_high: float = 45.0, despill: bool = True) -> np.ndarray:
     """RGB(uint8) -> RGBA(uint8). 색차(CbCr) 거리로 소프트 매트를 만든다.

@@ -141,3 +141,25 @@ def test_erase_regions():
     out = matte.erase_regions(rgba, [[0.6, 0.9, 1.0, 1.0]])
     assert (out[90:, 60:, 3] == 0).all()
     assert (out[:90, :, 3] == 255).all() and (out[:, :60, 3] == 255).all()
+
+
+def test_despeckle_removes_small_blobs_only():
+    from bk2d import matte
+    rgba = np.zeros((100, 100, 4), dtype=np.uint8)
+    rgba[20:80, 30:70, 3] = 255    # 몸통 2400px
+    rgba[5:8, 95:98, 3] = 255      # 잡티 9px (가장자리)
+    rgba[85:95, 10:20, 3] = 255    # 떨어진 덩어리 100px
+    out = matte.despeckle(rgba, 64)
+    assert out[5:8, 95:98, 3].max() == 0
+    assert out[20:80, 30:70, 3].min() == 255
+    assert out[85:95, 10:20, 3].min() == 255
+
+
+def test_loop_search_range():
+    from bk2d import timing
+    # 주기 10 프레임짜리 신호, 40 프레임 영상: 범위를 [8, 12] 로 주면 10 을 찾아야 함
+    thumbs = [np.full((4, 4, 3), np.sin(2 * np.pi * i / 10), dtype=np.float32) for i in range(40)]
+    end, score = timing.find_loop_end(thumbs, 8, 12)
+    assert end == 10 and score < 1e-5
+    end_default, _ = timing.find_loop_end(thumbs)
+    assert end_default >= 24
